@@ -1,5 +1,5 @@
 #define MyAppName "KQ Note"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppExeName "KQNote.exe"
 
 [Setup]
@@ -17,6 +17,13 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppName}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoProductName={#MyAppName}
+VersionInfoCopyright=Copyright (c) 2026 ckq7703
+AppPublisher=ckq7703
+AppPublisherURL=https://github.com/ckq7703/KQ-Note
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
