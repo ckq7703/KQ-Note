@@ -409,6 +409,12 @@ class NotesWidget(tk.Toplevel):
         self.text.tag_configure("match_current", background=MATCH_CURRENT_BG)
         self.text.tag_configure("url", foreground=FG_ACCENT, underline=True)
         self.text.tag_raise("url")
+        # Tk's built-in "sel" tag already exists before any of the tags above
+        # are configured, so by default it sits at the BOTTOM of the priority
+        # stack — codeblock/table/etc.'s own background then paints over the
+        # selection highlight instead of the other way around. Raise it last
+        # so a selection is always visible no matter what it overlaps.
+        self.text.tag_raise("sel")
         self.text.tag_bind("url", "<Button-1>", self._on_url_click)
         self.text.tag_bind("url", "<Enter>", lambda e: self.text.config(cursor="hand2"))
         self.text.tag_bind("url", "<Leave>", lambda e: self.text.config(cursor="xterm"))
@@ -604,8 +610,8 @@ class NotesWidget(tk.Toplevel):
     def _load_content_into_editor(self, content):
         self._photo_refs.clear()
         self._pending_images = set()
-        markup.render_into_text(self.text, content,
-                                 on_image=self._on_image_marker, on_hr=self._on_hr_marker)
+        markup.render_into_text(self.text, content, on_image=self._on_image_marker,
+                                 on_hr=self._on_hr_marker, on_codeblock=self._on_codeblock_end)
         for tagname in self.text._kq_links:
             self._bind_link_tag(tagname)
         self._highlight_urls()
@@ -1049,7 +1055,7 @@ class NotesWidget(tk.Toplevel):
 
         before_links = set(self.text._kq_links)
         markup.insert_markdown_at_cursor(self.text, clip_text, on_image=self._on_image_marker,
-                                          on_hr=self._on_hr_marker)
+                                          on_hr=self._on_hr_marker, on_codeblock=self._on_codeblock_end)
         for tagname in set(self.text._kq_links) - before_links:
             self._bind_link_tag(tagname)
 
@@ -1165,6 +1171,20 @@ class NotesWidget(tk.Toplevel):
         frame = tk.Frame(self.text, bg=BORDER, height=2, width=280)
         frame._kq_is_hr = True
         self.text.window_create("end", window=frame)
+
+    def _on_codeblock_end(self, code_text):
+        self.text.insert("end", "\n")
+        btn = tk.Label(self.text, text="📋 Copy", bg=BG_MENU, fg=FG_MUTED,
+                        font=("Segoe UI", 8), padx=6, pady=1, cursor="hand2")
+        btn._kq_is_codecopy = True
+        self.text.window_create("end", window=btn)
+        btn.bind("<Button-1>", lambda e, code=code_text, b=btn: self._copy_codeblock(code, b))
+
+    def _copy_codeblock(self, code_text, btn):
+        self.clipboard_clear()
+        self.clipboard_append(code_text)
+        btn.config(text="✓ Copied", fg=FG_ACCENT)
+        self.after(1200, lambda: btn.winfo_exists() and btn.config(text="📋 Copy", fg=FG_MUTED))
 
     def _bind_image_click(self, name, file_id):
         idx = self.text.index(name)

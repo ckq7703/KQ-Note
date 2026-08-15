@@ -105,7 +105,7 @@ def _insert_inline(text_widget, body, index="end", extra_tag=None):
         text_widget.insert(index, seg_text, tuple(insert_tags))
 
 
-def _write_markdown(text_widget, content, index, on_image, on_hr=None):
+def _write_markdown(text_widget, content, index, on_image, on_hr=None, on_codeblock=None):
     lines = (content or "").split("\n")
     n = len(lines)
     i = 0
@@ -133,6 +133,8 @@ def _write_markdown(text_widget, content, index, on_image, on_hr=None):
                 if j:
                     text_widget.insert(index, "\n")
                 text_widget.insert(index, code_line, ("codeblock",))
+            if on_codeblock:
+                on_codeblock("\n".join(code_lines))
             continue
 
         if (_is_table_row(line) and i + 1 < n and _is_table_separator_row(lines[i + 1])):
@@ -230,17 +232,17 @@ def _write_markdown(text_widget, content, index, on_image, on_hr=None):
         i += 1
 
 
-def render_into_text(text_widget, content, on_image=None, on_hr=None):
+def render_into_text(text_widget, content, on_image=None, on_hr=None, on_codeblock=None):
     text_widget.delete("1.0", "end")
     text_widget._kq_links = {}
-    _write_markdown(text_widget, content, "end", on_image, on_hr)
+    _write_markdown(text_widget, content, "end", on_image, on_hr, on_codeblock)
 
 
-def insert_markdown_at_cursor(text_widget, content, on_image=None, on_hr=None):
+def insert_markdown_at_cursor(text_widget, content, on_image=None, on_hr=None, on_codeblock=None):
     """Parse a markdown snippet (e.g. pasted from the clipboard) and insert it, formatted, at the cursor."""
     if not hasattr(text_widget, "_kq_links"):
         text_widget._kq_links = {}
-    _write_markdown(text_widget, content, "insert", on_image, on_hr)
+    _write_markdown(text_widget, content, "insert", on_image, on_hr, on_codeblock)
 
 
 def _dump_segments(text_widget, lineno, col_start, col_end):
@@ -309,13 +311,17 @@ def serialize_from_text(text_widget):
         image_lines[lineno] = name[len("img_"):]
 
     hr_lines = set()
+    skip_lines = set()  # decorative embedded widgets (code-block copy button, etc.)
     for name in text_widget.window_names():
         try:
             widget = text_widget.nametowidget(name)
         except (KeyError, tk.TclError):
             continue
+        lineno = int(text_widget.index(name).split(".")[0])
         if getattr(widget, "_kq_is_hr", False):
-            hr_lines.add(int(text_widget.index(name).split(".")[0]))
+            hr_lines.add(lineno)
+        elif getattr(widget, "_kq_is_codecopy", False):
+            skip_lines.add(lineno)
 
     out_lines = []
     in_code_block = False
@@ -332,6 +338,12 @@ def serialize_from_text(text_widget):
                 out_lines.append("```")
                 in_code_block = False
             out_lines.append("---")
+            continue
+
+        if lineno in skip_lines:
+            if in_code_block:
+                out_lines.append("```")
+                in_code_block = False
             continue
 
         line_start = f"{lineno}.0"
