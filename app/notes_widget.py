@@ -52,10 +52,18 @@ MENU_RADIUS = 8
 
 class ContextMenu(tk.Toplevel):
     """Popup menu with optional categories: pass (label, [subitems...]) for a
-    row that drills into a nested list instead of running a command. Kept as
-    a single window with a single grab (not real side-by-side submenus) —
-    Tk's local grab_set() restricts input to one toplevel, so a second popup
-    window opened while the first still holds the grab wouldn't be clickable."""
+    row that opens a flyout of those subitems on hover, closing again once
+    the pointer leaves both the row and the flyout.
+
+    The flyout is a Frame placed inside this SAME Toplevel (not a second
+    popup window) and the window itself grows/shrinks to fit it. That's
+    deliberate: Tk's local grab_set() restricts input to a single toplevel,
+    so a real second popup window opened alongside this one — while this one
+    still holds the grab — wouldn't be clickable. Keeping everything in one
+    window sidesteps that entirely."""
+
+    _ASSUMED_FLYOUT_WIDTH = 200
+    _FLYOUT_CLOSE_DELAY_MS = 220
 
     def __init__(self, parent, items):
         super().__init__(parent)
@@ -63,12 +71,20 @@ class ContextMenu(tk.Toplevel):
         self.attributes("-topmost", True)
         self.configure(bg=BG_MENU)
 
-        self._stack = [items]
+        self._items = items
         self._anchor = None
+        self._main_size = (0, 0)
+        self._flyout_open_key = None
+        self._flyout_close_job = None
 
         self.frame = tk.Frame(self, bg=BG_MENU)
-        self.frame.pack(fill="both", expand=True)
+        self.frame.place(x=0, y=0)
         self.frame.bind("<Button-1>", self._dismiss)
+
+        self.flyout = tk.Frame(self, bg=BG_MENU)
+        self.flyout.bind("<Enter>", lambda e: self._cancel_flyout_close())
+        self.flyout.bind("<Leave>", lambda e: self._schedule_flyout_close())
+        self.flyout.bind("<Button-1>", self._dismiss)
 
         self.bind("<Escape>", self._dismiss)
         self.bind("<FocusOut>", self._dismiss)
@@ -76,56 +92,98 @@ class ContextMenu(tk.Toplevel):
         # land on empty space (not on an item row) and dismiss instead of no-op.
         self.bind("<Button-1>", self._dismiss)
 
-        self._render(self._stack[-1])
+        for item in items:
+            self._add_main_row(item)
 
-    def _render(self, items):
-        for child in self.frame.winfo_children():
-            child.destroy()
-
-        if len(self._stack) > 1:
-            self._add_row("◂ Quay lại", self._go_back, fg=FG_MUTED)
+    def _add_main_row(self, item):
+        if item is None:
             sep = tk.Frame(self.frame, bg=BORDER, height=1)
             sep.pack(fill="x", padx=6, pady=4)
+            return
 
-        for item in items:
-            if item is None:
-                sep = tk.Frame(self.frame, bg=BORDER, height=1)
-                sep.pack(fill="x", padx=6, pady=4)
-                continue
-            label, action = item
-            if isinstance(action, list):
-                self._add_row(f"{label}   ▸", lambda sub=action: self._go_into(sub))
-            else:
-                self._add_row(label, lambda c=action: self._invoke(c))
+        label, action = item
+        if isinstance(action, list):
+            row = self._make_row(self.frame, f"{label}   ▸")
+            row.bind("<Enter>", lambda e, r=row, sub=action: self._on_category_enter(r, sub), add="+")
+            row.bind("<Leave>", lambda e: self._schedule_flyout_close(), add="+")
+            row.bind("<Button-1>", lambda e: "break")
+        else:
+            row = self._make_row(self.frame, label)
+            row.bind("<Enter>", lambda e: self._schedule_flyout_close(), add="+")
+            row.bind("<Button-1>", self._make_handler(action))
 
-        self.update_idletasks()
-        if self._anchor is not None:
-            self.geometry(f"+{self._anchor[0]}+{self._anchor[1]}")
-        round_window(self, MENU_RADIUS)
-
-    def _add_row(self, text, on_click, fg=FG_TEXT):
-        row = tk.Label(self.frame, text=text, bg=BG_MENU, fg=fg, anchor="w",
+    def _make_row(self, master, text):
+        row = tk.Label(master, text=text, bg=BG_MENU, fg=FG_TEXT, anchor="w",
                         font=("Segoe UI", 9), padx=16, pady=7, cursor="hand2")
         row.pack(fill="x")
         row.bind("<Enter>", lambda e, r=row: r.config(bg=FG_ACCENT, fg="#ffffff"))
-        row.bind("<Leave>", lambda e, r=row: r.config(bg=BG_MENU, fg=fg))
-        def handle(_event, cb=on_click):
-            cb()
+        row.bind("<Leave>", lambda e, r=row: r.config(bg=BG_MENU, fg=FG_TEXT))
+        return row
+
+    def _make_handler(self, command):
+        def handle(_event, cb=command):
+            self._invoke(cb)
             return "break"  # stop the click from also bubbling up to the
             # Toplevel-level dismiss binding (Tk bindtags propagate a
             # widget's events through its ancestors), which would otherwise
-            # destroy the menu right after navigating into a category.
+            # both destroy the menu AND run the command's own side effects
+            # against a half-torn-down widget.
+        return handle
 
-        row.bind("<Button-1>", handle)
+    # ---- hover-opened flyout ----
+    def _on_category_enter(self, row, sub_items):
+        self._cancel_flyout_close()
+        key = id(sub_items)
+        if self._flyout_open_key == key:
+            return  # already showing this exact category
+        self._flyout_open_key = key
 
-    def _go_into(self, sub_items):
-        self._stack.append(sub_items)
-        self._render(sub_items)
+        for child in self.flyout.winfo_children():
+            child.destroy()
+        for item in sub_items:
+            self._add_flyout_row(item)
 
-    def _go_back(self):
-        if len(self._stack) > 1:
-            self._stack.pop()
-            self._render(self._stack[-1])
+        self.flyout.update_idletasks()
+        sub_w = self.flyout.winfo_reqwidth()
+        sub_h = self.flyout.winfo_reqheight()
+        main_w, main_h = self._main_size
+        row_y = row.winfo_rooty() - self.winfo_rooty()
+
+        total_w = main_w + sub_w
+        total_h = max(main_h, row_y + sub_h)
+        x, y = self._anchor
+        self.geometry(f"{total_w}x{total_h}+{x}+{y}")
+        self.flyout.place(x=main_w, y=row_y)
+        round_window(self, MENU_RADIUS)
+
+    def _add_flyout_row(self, item):
+        if item is None:
+            sep = tk.Frame(self.flyout, bg=BORDER, height=1)
+            sep.pack(fill="x", padx=6, pady=4)
+            return
+        label, action = item
+        row = self._make_row(self.flyout, label)
+        row.bind("<Button-1>", self._make_handler(action))
+
+    def _schedule_flyout_close(self):
+        self._cancel_flyout_close()
+        self._flyout_close_job = self.after(self._FLYOUT_CLOSE_DELAY_MS, self._close_flyout)
+
+    def _cancel_flyout_close(self):
+        if self._flyout_close_job is not None:
+            self.after_cancel(self._flyout_close_job)
+            self._flyout_close_job = None
+
+    def _close_flyout(self):
+        self._flyout_close_job = None
+        if self._flyout_open_key is None:
+            return
+        self._flyout_open_key = None
+        self.flyout.place_forget()
+        main_w, main_h = self._main_size
+        x, y = self._anchor
+        self.geometry(f"{main_w}x{main_h}+{x}+{y}")
+        round_window(self, MENU_RADIUS)
 
     def _invoke(self, command):
         self.destroy()
@@ -137,9 +195,20 @@ class ContextMenu(tk.Toplevel):
             self.destroy()
 
     def popup(self, x, y):
-        self._anchor = (x, y)
         self.update_idletasks()
-        self.geometry(f"+{x}+{y}")
+        main_w = self.frame.winfo_reqwidth()
+        main_h = self.frame.winfo_reqheight()
+        self._main_size = (main_w, main_h)
+
+        # Leave enough room for a flyout to open to the right without going
+        # off-screen — shift the whole menu left up front instead of trying
+        # to reposition a flyout after the fact.
+        screen_w = self.winfo_screenwidth()
+        if x + main_w + self._ASSUMED_FLYOUT_WIDTH > screen_w:
+            x = max(0, screen_w - main_w - self._ASSUMED_FLYOUT_WIDTH)
+
+        self._anchor = (x, y)
+        self.geometry(f"{main_w}x{main_h}+{x}+{y}")
         round_window(self, MENU_RADIUS)
         self.deiconify()
         self.focus_force()
@@ -301,6 +370,11 @@ class NotesWidget(tk.Toplevel):
             relief="flat", wrap="word", font=("Segoe UI", 10), padx=4, pady=4,
             undo=True, borderwidth=0, highlightthickness=0,
             selectbackground=SELECT_BG, selectforeground=FG_TEXT,
+            # Without this, Tk hides the selection highlight entirely as soon
+            # as the widget loses keyboard focus — which happens the instant
+            # the right-click context menu takes focus, making a selection
+            # you just made look like it vanished.
+            inactiveselectbackground=SELECT_BG,
         )
         self.text.pack(side="left", fill="both", expand=True)
 
