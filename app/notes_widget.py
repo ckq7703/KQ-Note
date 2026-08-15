@@ -186,9 +186,16 @@ class ContextMenu(tk.Toplevel):
         round_window(self, MENU_RADIUS)
 
     def _invoke(self, command):
+        owner = self.master
         self.destroy()
         if command:
-            command()
+            # Deferred rather than called inline: running it in the same call
+            # stack as destroy() (which releases this menu's grab_set()) can
+            # race the grab teardown on Windows — actions that themselves
+            # grab focus/attention right away (like the screenshot overlay)
+            # could then misbehave. A tick later, the menu and its grab are
+            # fully gone.
+            owner.after(10, command)
 
     def _dismiss(self, _event=None):
         if self.winfo_exists():
