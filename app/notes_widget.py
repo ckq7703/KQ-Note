@@ -233,6 +233,7 @@ class NotesWidget(tk.Toplevel):
         _tb_btn("☑", lambda: self._toggle_list("checkbox"))
         _tb_btn("{ }", self._toggle_codeblock)
         _tb_btn("🔗", self._insert_link)
+        _tb_btn("📷", self._start_screenshot)
 
         body = tk.Frame(outer, bg=BG)
         body.pack(fill="both", expand=True, padx=(10, 10), pady=(0, 8))
@@ -923,6 +924,79 @@ class NotesWidget(tk.Toplevel):
         self._bind_image_click(name, file_id)
         self.text.insert("insert", "\n")
         self._on_text_changed()
+
+    # ---------- screenshot capture ----------
+    def _start_screenshot(self):
+        # Hide the note itself first so it isn't part of the capture and
+        # doesn't block the view of whatever's behind it.
+        self.withdraw()
+        self.after(150, self._open_screenshot_overlay)
+
+    def _open_screenshot_overlay(self):
+        overlay = tk.Toplevel(self)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.attributes("-alpha", 0.35)
+        sw, sh = overlay.winfo_screenwidth(), overlay.winfo_screenheight()
+        overlay.geometry(f"{sw}x{sh}+0+0")
+        overlay.configure(bg="#000000")
+
+        canvas = tk.Canvas(overlay, bg="#000000", highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill="both", expand=True)
+
+        drag = {"start": None, "rect": None}
+
+        def on_press(event):
+            drag["start"] = (event.x_root, event.y_root)
+            drag["rect"] = canvas.create_rectangle(
+                event.x_root, event.y_root, event.x_root, event.y_root,
+                outline=FG_ACCENT, width=2)
+
+        def on_drag(event):
+            if drag["rect"] is None:
+                return
+            x0, y0 = drag["start"]
+            canvas.coords(drag["rect"], x0, y0, event.x_root, event.y_root)
+
+        def on_release(event):
+            overlay.destroy()
+            if drag["start"] is None:
+                self._cancel_screenshot()
+                return
+            x0, y0 = drag["start"]
+            x1, y1 = event.x_root, event.y_root
+            left, right = sorted((x0, x1))
+            top, bottom = sorted((y0, y1))
+            if right - left < 4 or bottom - top < 4:
+                self._cancel_screenshot()
+                return
+            # Give the overlay a moment to actually disappear from the screen
+            # before grabbing — otherwise the capture can include it.
+            self.after(120, lambda: self._capture_and_insert(left, top, right, bottom))
+
+        def on_cancel(_event=None):
+            overlay.destroy()
+            self._cancel_screenshot()
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        overlay.bind("<Escape>", on_cancel)
+        overlay.focus_force()
+
+    def _cancel_screenshot(self):
+        self.deiconify()
+        self.lift()
+
+    def _capture_and_insert(self, left, top, right, bottom):
+        try:
+            img = ImageGrab.grab(bbox=(left, top, right, bottom))
+        except Exception:
+            img = None
+        self.deiconify()
+        self.lift()
+        if img is not None:
+            self._insert_image_now(img)
 
     def _on_image_marker(self, file_id):
         name = f"img_{file_id}"
