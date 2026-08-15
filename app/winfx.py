@@ -13,6 +13,10 @@ ABE_LEFT = 0
 ABE_RIGHT = 2
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 _APPBAR_CALLBACK_MSG = 0x8000 + 1  # WM_APP + 1; arbitrary but must be >= WM_APP
 
 _mutex_handle = None
@@ -100,6 +104,23 @@ def set_appbar_edge_pos(hwnd, side, width):
         ctypes.windll.shell32.SHAppBarMessage(ABM_SETPOS, ctypes.byref(abd))
 
         return abd.rc.left, abd.rc.top, abd.rc.right - abd.rc.left, abd.rc.bottom - abd.rc.top
+    except Exception:
+        return None
+
+
+def get_virtual_screen_rect():
+    """Bounding rect (x, y, width, height) spanning ALL monitors, not just the
+    primary one — winfo_screenwidth()/height() only ever report the primary
+    monitor, which would leave the screenshot overlay not covering (or
+    misaligned on) a secondary monitor. Returns None if the Win32 call fails."""
+    try:
+        x = ctypes.windll.user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        y = ctypes.windll.user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        w = ctypes.windll.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        h = ctypes.windll.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        if w <= 0 or h <= 0:
+            return None
+        return x, y, w, h
     except Exception:
         return None
 

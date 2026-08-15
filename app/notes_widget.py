@@ -1103,40 +1103,54 @@ class NotesWidget(tk.Toplevel):
         # Hide the note itself first so it isn't part of the capture and
         # doesn't block the view of whatever's behind it.
         self.withdraw()
+        self.update_idletasks()  # make sure the hide is actually applied first
         self.after(150, self._open_screenshot_overlay)
 
     def _open_screenshot_overlay(self):
+        rect = winfx.get_virtual_screen_rect()
+        if rect is not None:
+            vx, vy, vw, vh = rect
+        else:
+            vx, vy = 0, 0
+            vw, vh = self.winfo_screenwidth(), self.winfo_screenheight()
+
         overlay = tk.Toplevel(self)
         overlay.overrideredirect(True)
         overlay.attributes("-topmost", True)
         overlay.attributes("-alpha", 0.35)
-        sw, sh = overlay.winfo_screenwidth(), overlay.winfo_screenheight()
-        overlay.geometry(f"{sw}x{sh}+0+0")
+        # Covers every monitor (not just the primary one winfo_screenwidth()/
+        # height() would report), so dragging a selection works consistently
+        # regardless of which monitor the note/cursor happens to be on.
+        overlay.geometry(f"{vw}x{vh}+{vx}+{vy}")
         overlay.configure(bg="#000000")
 
         canvas = tk.Canvas(overlay, bg="#000000", highlightthickness=0, cursor="crosshair")
         canvas.pack(fill="both", expand=True)
 
-        drag = {"start": None, "rect": None}
+        drag = {"start_root": None, "start_local": None, "rect": None}
 
         def on_press(event):
-            drag["start"] = (event.x_root, event.y_root)
+            drag["start_root"] = (event.x_root, event.y_root)
+            drag["start_local"] = (event.x, event.y)
             drag["rect"] = canvas.create_rectangle(
-                event.x_root, event.y_root, event.x_root, event.y_root,
-                outline=FG_ACCENT, width=2)
+                event.x, event.y, event.x, event.y, outline=FG_ACCENT, width=2)
 
         def on_drag(event):
             if drag["rect"] is None:
                 return
-            x0, y0 = drag["start"]
-            canvas.coords(drag["rect"], x0, y0, event.x_root, event.y_root)
+            x0, y0 = drag["start_local"]
+            # event.x/y are canvas-local; using event.x_root/y_root here would
+            # be offset by the overlay's own (vx, vy) origin and draw the
+            # selection box in the wrong place whenever that isn't (0, 0).
+            canvas.coords(drag["rect"], x0, y0, event.x, event.y)
 
         def on_release(event):
+            overlay.grab_release()
             overlay.destroy()
-            if drag["start"] is None:
+            if drag["start_root"] is None:
                 self._cancel_screenshot()
                 return
-            x0, y0 = drag["start"]
+            x0, y0 = drag["start_root"]
             x1, y1 = event.x_root, event.y_root
             left, right = sorted((x0, x1))
             top, bottom = sorted((y0, y1))
@@ -1148,6 +1162,7 @@ class NotesWidget(tk.Toplevel):
             self.after(120, lambda: self._capture_and_insert(left, top, right, bottom))
 
         def on_cancel(_event=None):
+            overlay.grab_release()
             overlay.destroy()
             self._cancel_screenshot()
 
@@ -1155,7 +1170,15 @@ class NotesWidget(tk.Toplevel):
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
         overlay.bind("<Escape>", on_cancel)
+        overlay.update_idletasks()
+        overlay.deiconify()
+        overlay.lift()
         overlay.focus_force()
+        # A local grab makes sure every mouse/keyboard event this app sees
+        # goes to the overlay specifically — without it, drag-selection was
+        # sometimes flaky depending on which window Windows considered
+        # "focused" right after the popup menu that triggered this closed.
+        overlay.grab_set()
 
     def _cancel_screenshot(self):
         self.deiconify()
