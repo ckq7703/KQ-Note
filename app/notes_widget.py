@@ -13,7 +13,11 @@ from app import markup, store
 from app.config import load_config, save_config
 from app.sync import state as sync_state
 from app.sync.engine import SyncEngine, content_hash
-from app.winfx import round_window
+from app import winfx
+from app.winfx import get_work_area, round_window
+
+DOCK_EDGE_THRESHOLD = 24
+DOCK_UNDOCK_DISTANCE = 40
 
 SYNC_POLL_INTERVAL_MS = 45_000
 SYNC_EVENT_DRAIN_MS = 500
@@ -97,7 +101,11 @@ class NotesWidget(tk.Toplevel):
         super().__init__(root)
         self.root = root
         self._drag = {"x": 0, "y": 0}
+        self._drag_undocked_this_gesture = False
         self._resize = {"x": 0, "y": 0, "w": 0, "h": 0}
+        self._docked_side = None
+        self._pre_dock_geometry = None
+        self._appbar_registered = False
         self._save_after_id = None
         self._matches = []
         self._match_idx = -1
@@ -122,6 +130,14 @@ class NotesWidget(tk.Toplevel):
         self.configure(bg=BG)
 
         self.geometry(cfg.get("widget_geometry", "380x520+880+70"))
+        self._pre_dock_geometry = cfg.get("pre_dock_geometry")
+        docked_side = cfg.get("docked_side")
+        if docked_side in ("left", "right"):
+            # Set before scheduling so _apply_dock treats this as "already docked,
+            # just re-applying geometry" rather than a fresh dock (which would
+            # overwrite _pre_dock_geometry with the current, already-docked size).
+            self._docked_side = docked_side
+            self.after(10, lambda: self._apply_dock(docked_side))
 
         self._build()
         if self.sync_engine.is_logged_in():
@@ -284,14 +300,40 @@ class NotesWidget(tk.Toplevel):
     def _drag_start(self, event):
         self._drag["x"] = event.x
         self._drag["y"] = event.y
+        self._drag_undocked_this_gesture = False
 
     def _drag_move(self, event):
+        if self._docked_side is not None and not self._drag_undocked_this_gesture:
+            if abs(event.x - self._drag["x"]) < DOCK_UNDOCK_DISTANCE and \
+               abs(event.y - self._drag["y"]) < DOCK_UNDOCK_DISTANCE:
+                return  # still docked — ignore small jitters until a real drag away
+            self._undock(event)
+
         x = self.winfo_x() + (event.x - self._drag["x"])
         y = self.winfo_y() + (event.y - self._drag["y"])
         self.geometry(f"+{x}+{y}")
 
+    def _undock(self, event):
+        self._drag_undocked_this_gesture = True
+        self._unregister_appbar_if_needed()
+        self._docked_side = None
+        if self._pre_dock_geometry:
+            self.geometry(self._pre_dock_geometry)
+            # winfo_x()/winfo_width() below need the new geometry applied first —
+            # without this, _drag_move's position calc reads stale (docked) values.
+            self.update_idletasks()
+        # Re-anchor the drag so movement keeps following the cursor smoothly
+        # after the size/position jump back to the floating geometry.
+        self._drag["x"] = event.x
+        self._drag["y"] = event.y
+
+    def _unregister_appbar_if_needed(self):
+        if self._appbar_registered:
+            winfx.unregister_appbar(self.winfo_id())
+            self._appbar_registered = False
+
     def _drag_end(self, _event):
-        self._save_geometry()
+        self._maybe_dock_or_save()
 
     def _resize_start(self, event):
         self._resize = {"x": event.x_root, "y": event.y_root,
@@ -305,11 +347,79 @@ class NotesWidget(tk.Toplevel):
         self.geometry(f"{w}x{h}")
 
     def _resize_end(self, _event):
+        self._unregister_appbar_if_needed()
+        self._docked_side = None
         self._save_geometry()
+
+    def _maybe_dock_or_save(self):
+        # The last drag-move's geometry() set hasn't necessarily been flushed
+        # yet — winfo_x()/winfo_width() below would otherwise risk reading the
+        # position from before that final move.
+        self.update_idletasks()
+
+        work = get_work_area()
+        if work is None:
+            self._save_geometry()
+            return
+
+        left, top, right, bottom = work
+        x = self.winfo_x()
+        w = self.winfo_width()
+        if x <= left + DOCK_EDGE_THRESHOLD:
+            self._apply_dock("left")
+        elif (x + w) >= right - DOCK_EDGE_THRESHOLD:
+            self._apply_dock("right")
+        else:
+            self._unregister_appbar_if_needed()
+            self._docked_side = None
+            self._save_geometry()
+
+    def _apply_dock(self, side):
+        if self._docked_side is None:
+            self._pre_dock_geometry = self.geometry()
+        self._docked_side = side
+
+        w = self._dock_width()
+        hwnd = self.winfo_id()
+        if not self._appbar_registered:
+            winfx.register_appbar(hwnd)
+            self._appbar_registered = True
+
+        # Registers this window as an AppBar (same mechanism the Windows
+        # taskbar uses) so maximized windows shrink to avoid it, instead of
+        # just floating on top of everything at that screen position.
+        rect = winfx.set_appbar_edge_pos(hwnd, side, w)
+        if rect is None:
+            self._unregister_appbar_if_needed()
+            return
+        x, y, width, height = rect
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        # _save_geometry() reads self.geometry() right back — without flushing
+        # here first, that read can still see the pre-dock size (same class of
+        # stale-read issue as in _undock).
+        self.update_idletasks()
+        self._save_geometry()
+
+    def _dock_width(self):
+        # winfo_width() can still report Tk's "not yet mapped" placeholder (1px)
+        # this soon after construction — fall back to the width baked into a
+        # saved geometry string instead of trusting it blindly.
+        live_w = self.winfo_width()
+        if live_w > 1:
+            return live_w
+        for geom in (self._pre_dock_geometry, self.geometry()):
+            if geom:
+                try:
+                    return int(geom.split("x")[0])
+                except (ValueError, IndexError):
+                    pass
+        return MIN_W
 
     def _save_geometry(self):
         cfg = load_config()
         cfg["widget_geometry"] = self.geometry()
+        cfg["docked_side"] = self._docked_side
+        cfg["pre_dock_geometry"] = self._pre_dock_geometry
         save_config(cfg)
 
     def _on_window_configure(self, _event=None):
@@ -997,4 +1107,5 @@ class NotesWidget(tk.Toplevel):
             self.show()
 
     def flush_and_close(self):
+        self._unregister_appbar_if_needed()
         self.flush_save()
