@@ -311,17 +311,21 @@ def serialize_from_text(text_widget):
         image_lines[lineno] = name[len("img_"):]
 
     hr_lines = set()
-    skip_lines = set()  # decorative embedded widgets (code-block copy button, etc.)
+    # lineno -> column of the copy-button window embedded inline after a code
+    # block's last line; code content on that line must be read only up to
+    # here, or the button's trailing padding would get saved as code text.
+    codecopy_cols = {}
     for name in text_widget.window_names():
         try:
             widget = text_widget.nametowidget(name)
         except (KeyError, tk.TclError):
             continue
-        lineno = int(text_widget.index(name).split(".")[0])
+        idx = text_widget.index(name)
+        lineno_str, col_str = idx.split(".")
         if getattr(widget, "_kq_is_hr", False):
-            hr_lines.add(lineno)
+            hr_lines.add(int(lineno_str))
         elif getattr(widget, "_kq_is_codecopy", False):
-            skip_lines.add(lineno)
+            codecopy_cols[int(lineno_str)] = int(col_str)
 
     out_lines = []
     in_code_block = False
@@ -340,12 +344,6 @@ def serialize_from_text(text_widget):
             out_lines.append("---")
             continue
 
-        if lineno in skip_lines:
-            if in_code_block:
-                out_lines.append("```")
-                in_code_block = False
-            continue
-
         line_start = f"{lineno}.0"
         line_end = f"{lineno}.end"
         tags = text_widget.tag_names(line_start)
@@ -355,7 +353,9 @@ def serialize_from_text(text_widget):
             if not in_code_block:
                 out_lines.append("```")
                 in_code_block = True
-            out_lines.append(text_widget.get(line_start, line_end))
+            copy_col = codecopy_cols.get(lineno)
+            code_end = f"{lineno}.{copy_col}" if copy_col is not None else line_end
+            out_lines.append(text_widget.get(line_start, code_end))
             continue
         elif in_code_block:
             out_lines.append("```")

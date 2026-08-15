@@ -828,6 +828,11 @@ class NotesWidget(tk.Toplevel):
             self._strip_line_tags(ls, le)
             if turning_on:
                 self.text.tag_add("codeblock", ls, le)
+        if turning_on:
+            code_text = "\n".join(
+                self.text.get(f"{ln}.0", f"{ln}.end") for ln in range(start_line, end_line + 1)
+            )
+            self._on_codeblock_end(code_text, at_index=f"{end_line}.end")
         self._on_text_changed()
 
     # ---------- links ----------
@@ -1172,12 +1177,21 @@ class NotesWidget(tk.Toplevel):
         frame._kq_is_hr = True
         self.text.window_create("end", window=frame)
 
-    def _on_codeblock_end(self, code_text):
-        self.text.insert("end", "\n")
+    def _on_codeblock_end(self, code_text, at_index=None):
+        # Embeds inline right after the block's last code line (same line, to
+        # its right) rather than on a line of its own below the block.
+        if at_index is not None:
+            self.text.mark_set("insert", at_index)
+            target = "insert"
+        else:
+            target = "end"
+        # No literal spacer text before the button — its own padx below gives
+        # the visual gap, and keeps the button's index exactly at the code
+        # content's true end so serialization can truncate there cleanly.
         btn = tk.Label(self.text, text="📋 Copy", bg=BG_MENU, fg=FG_MUTED,
                         font=("Segoe UI", 8), padx=6, pady=1, cursor="hand2")
         btn._kq_is_codecopy = True
-        self.text.window_create("end", window=btn)
+        self.text.window_create(target, window=btn)
         btn.bind("<Button-1>", lambda e, code=code_text, b=btn: self._copy_codeblock(code, b))
 
     def _copy_codeblock(self, code_text, btn):
