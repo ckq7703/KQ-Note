@@ -51,34 +51,81 @@ MENU_RADIUS = 8
 
 
 class ContextMenu(tk.Toplevel):
+    """Popup menu with optional categories: pass (label, [subitems...]) for a
+    row that drills into a nested list instead of running a command. Kept as
+    a single window with a single grab (not real side-by-side submenus) —
+    Tk's local grab_set() restricts input to one toplevel, so a second popup
+    window opened while the first still holds the grab wouldn't be clickable."""
+
     def __init__(self, parent, items):
         super().__init__(parent)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.configure(bg=BG_MENU)
 
-        frame = tk.Frame(self, bg=BG_MENU)
-        frame.pack(fill="both", expand=True)
+        self._stack = [items]
+        self._anchor = None
 
-        for item in items:
-            if item is None:
-                sep = tk.Frame(frame, bg=BORDER, height=1)
-                sep.pack(fill="x", padx=6, pady=4)
-                continue
-            label, command = item
-            row = tk.Label(frame, text=label, bg=BG_MENU, fg=FG_TEXT, anchor="w",
-                            font=("Segoe UI", 9), padx=16, pady=7, cursor="hand2")
-            row.pack(fill="x")
-            row.bind("<Enter>", lambda e, r=row: r.config(bg=FG_ACCENT, fg="#ffffff"))
-            row.bind("<Leave>", lambda e, r=row: r.config(bg=BG_MENU, fg=FG_TEXT))
-            row.bind("<Button-1>", lambda e, c=command: self._invoke(c))
+        self.frame = tk.Frame(self, bg=BG_MENU)
+        self.frame.pack(fill="both", expand=True)
+        self.frame.bind("<Button-1>", self._dismiss)
 
         self.bind("<Escape>", self._dismiss)
         self.bind("<FocusOut>", self._dismiss)
         # grab_set() routes every app click here while open; catch clicks that
         # land on empty space (not on an item row) and dismiss instead of no-op.
         self.bind("<Button-1>", self._dismiss)
-        frame.bind("<Button-1>", self._dismiss)
+
+        self._render(self._stack[-1])
+
+    def _render(self, items):
+        for child in self.frame.winfo_children():
+            child.destroy()
+
+        if len(self._stack) > 1:
+            self._add_row("◂ Quay lại", self._go_back, fg=FG_MUTED)
+            sep = tk.Frame(self.frame, bg=BORDER, height=1)
+            sep.pack(fill="x", padx=6, pady=4)
+
+        for item in items:
+            if item is None:
+                sep = tk.Frame(self.frame, bg=BORDER, height=1)
+                sep.pack(fill="x", padx=6, pady=4)
+                continue
+            label, action = item
+            if isinstance(action, list):
+                self._add_row(f"{label}   ▸", lambda sub=action: self._go_into(sub))
+            else:
+                self._add_row(label, lambda c=action: self._invoke(c))
+
+        self.update_idletasks()
+        if self._anchor is not None:
+            self.geometry(f"+{self._anchor[0]}+{self._anchor[1]}")
+        round_window(self, MENU_RADIUS)
+
+    def _add_row(self, text, on_click, fg=FG_TEXT):
+        row = tk.Label(self.frame, text=text, bg=BG_MENU, fg=fg, anchor="w",
+                        font=("Segoe UI", 9), padx=16, pady=7, cursor="hand2")
+        row.pack(fill="x")
+        row.bind("<Enter>", lambda e, r=row: r.config(bg=FG_ACCENT, fg="#ffffff"))
+        row.bind("<Leave>", lambda e, r=row: r.config(bg=BG_MENU, fg=fg))
+        def handle(_event, cb=on_click):
+            cb()
+            return "break"  # stop the click from also bubbling up to the
+            # Toplevel-level dismiss binding (Tk bindtags propagate a
+            # widget's events through its ancestors), which would otherwise
+            # destroy the menu right after navigating into a category.
+
+        row.bind("<Button-1>", handle)
+
+    def _go_into(self, sub_items):
+        self._stack.append(sub_items)
+        self._render(sub_items)
+
+    def _go_back(self):
+        if len(self._stack) > 1:
+            self._stack.pop()
+            self._render(self._stack[-1])
 
     def _invoke(self, command):
         self.destroy()
@@ -90,6 +137,7 @@ class ContextMenu(tk.Toplevel):
             self.destroy()
 
     def popup(self, x, y):
+        self._anchor = (x, y)
         self.update_idletasks()
         self.geometry(f"+{x}+{y}")
         round_window(self, MENU_RADIUS)
@@ -854,6 +902,27 @@ class NotesWidget(tk.Toplevel):
 
     # ---------- right-click context menus ----------
     def _show_text_menu(self, event):
+        format_items = [
+            ("In đậm", lambda: self._toggle_inline("bold")),
+            ("In nghiêng", lambda: self._toggle_inline("italic")),
+            ("Code", lambda: self._toggle_inline("code")),
+        ]
+        block_items = [
+            ("Tiêu đề (H1)", self._toggle_heading),
+            ("Trích dẫn", self._toggle_blockquote),
+            ("Khối code", self._toggle_codeblock),
+        ]
+        list_items = [
+            ("Danh sách số", lambda: self._toggle_list("numbered")),
+            ("Gạch đầu dòng —", lambda: self._toggle_list("dash")),
+            ("Gạch đầu dòng +", lambda: self._toggle_list("plus")),
+            ("Checkbox", lambda: self._toggle_list("checkbox")),
+        ]
+        insert_items = [
+            ("Chèn liên kết", self._insert_link),
+            ("Chụp màn hình", self._start_screenshot),
+        ]
+
         menu = ContextMenu(self, [
             ("Cắt", self._cut_text),
             ("Sao chép", lambda: self.text.event_generate("<<Copy>>")),
@@ -861,18 +930,10 @@ class NotesWidget(tk.Toplevel):
             None,
             ("Chọn tất cả", self._select_all_text),
             None,
-            ("Tiêu đề (H1)", self._toggle_heading),
-            ("In đậm", lambda: self._toggle_inline("bold")),
-            ("In nghiêng", lambda: self._toggle_inline("italic")),
-            ("Code", lambda: self._toggle_inline("code")),
-            ("Trích dẫn", self._toggle_blockquote),
-            ("Danh sách số", lambda: self._toggle_list("numbered")),
-            ("Gạch đầu dòng —", lambda: self._toggle_list("dash")),
-            ("Gạch đầu dòng +", lambda: self._toggle_list("plus")),
-            ("Checkbox", lambda: self._toggle_list("checkbox")),
-            ("Khối code", self._toggle_codeblock),
-            ("Chèn liên kết", self._insert_link),
-            ("Chụp màn hình", self._start_screenshot),
+            ("Định dạng chữ", format_items),
+            ("Khối nội dung", block_items),
+            ("Danh sách", list_items),
+            ("Chèn", insert_items),
         ])
         menu.popup(event.x_root, event.y_root)
 
