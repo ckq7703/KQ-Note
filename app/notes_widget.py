@@ -860,6 +860,19 @@ class NotesWidget(tk.Toplevel):
             ("Dán", self._paste_text),
             None,
             ("Chọn tất cả", self._select_all_text),
+            None,
+            ("Tiêu đề (H1)", self._toggle_heading),
+            ("In đậm", lambda: self._toggle_inline("bold")),
+            ("In nghiêng", lambda: self._toggle_inline("italic")),
+            ("Code", lambda: self._toggle_inline("code")),
+            ("Trích dẫn", self._toggle_blockquote),
+            ("Danh sách số", lambda: self._toggle_list("numbered")),
+            ("Gạch đầu dòng —", lambda: self._toggle_list("dash")),
+            ("Gạch đầu dòng +", lambda: self._toggle_list("plus")),
+            ("Checkbox", lambda: self._toggle_list("checkbox")),
+            ("Khối code", self._toggle_codeblock),
+            ("Chèn liên kết", self._insert_link),
+            ("Chụp màn hình", self._start_screenshot),
         ])
         menu.popup(event.x_root, event.y_root)
 
