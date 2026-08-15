@@ -1,6 +1,9 @@
+import io
 import os
+import queue
 import re
 import tkinter as tk
+import tkinter.simpledialog as simpledialog
 import uuid
 import webbrowser
 
@@ -8,12 +11,21 @@ from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
 from app import markup, store
 from app.config import load_config, save_config
+from app.sync import state as sync_state
+from app.sync.engine import SyncEngine, content_hash
 from app.winfx import round_window
+
+SYNC_POLL_INTERVAL_MS = 45_000
+SYNC_EVENT_DRAIN_MS = 500
 
 URL_RE = re.compile(r"(https?://[^\s]+|www\.[^\s]+)")
 IMAGE_MAX_SIZE = (300, 400)
 IMAGE_CHECK_INTERVAL_MS = 300
-LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo-kqnote.png")
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+LOGO_PATH = os.path.join(ASSETS_DIR, "logo-kqnote.png")
+GOOGLE_ICON_PATH = os.path.join(ASSETS_DIR, "google-auth-icon.png")
+CLOUD_ICON_SIZE = 18
+AVATAR_SIZE = 20
 
 BG = "#141416"
 BG_HEADER = "#1a1a1d"
@@ -94,6 +106,7 @@ class NotesWidget(tk.Toplevel):
 
         cfg = load_config()
         self._always_on_top = cfg.get("always_on_top", True)
+        self.sync_engine = SyncEngine(cfg.get("sync_server_url"))
 
         self.title("KQ Note")
         if os.path.exists(LOGO_PATH):
@@ -111,10 +124,17 @@ class NotesWidget(tk.Toplevel):
         self.geometry(cfg.get("widget_geometry", "380x520+880+70"))
 
         self._build()
-        markup.render_into_text(self.text, store.load_content(), on_image=self._on_image_marker)
-        self._highlight_urls()
-        if self._pending_images:
-            self.after(IMAGE_CHECK_INTERVAL_MS, self._check_lazy_images)
+        if self.sync_engine.is_logged_in():
+            # Resuming a session from a previous run: notes.cloud.txt already
+            # mirrors this account, refresh it with a normal (guarded) pull.
+            self._load_content_into_editor(store.load_cloud_cache())
+            self.after(1000, self.sync_engine.pull_async)
+            self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
+        else:
+            self._load_content_into_editor(store.load_content())
+
+        self._update_cloud_icon()
+        self.after(SYNC_EVENT_DRAIN_MS, self._drain_sync_events)
 
         self.bind("<Configure>", self._on_window_configure)
         self.after(10, lambda: round_window(self, WINDOW_RADIUS))
@@ -142,6 +162,13 @@ class NotesWidget(tk.Toplevel):
                                  font=("Segoe UI", 9), padx=10, cursor="hand2")
         self.pin_btn.pack(side="right")
         self.pin_btn.bind("<Button-1>", lambda e: self.toggle_always_on_top())
+
+        self._cloud_icon_photo = self._load_square_photo(GOOGLE_ICON_PATH, CLOUD_ICON_SIZE)
+        self._avatar_photo = None
+        self.cloud_btn = tk.Label(header, bg=BG_HEADER, fg=FG_MUTED,
+                                   font=("Segoe UI", 10), padx=10, cursor="hand2")
+        self.cloud_btn.pack(side="right")
+        self.cloud_btn.bind("<Button-1>", self._on_cloud_click)
 
         search_row = tk.Frame(outer, bg=BG, padx=10, pady=8)
         search_row.pack(fill="x")
@@ -171,30 +198,25 @@ class NotesWidget(tk.Toplevel):
         toolbar = tk.Frame(outer, bg=BG)
         toolbar.pack(fill="x", padx=10, pady=(6, 4))
 
-        h1_btn = tk.Label(toolbar, text="H1", bg=BG, fg=FG_MUTED,
-                           font=("Segoe UI", 9, "bold"), cursor="hand2", padx=6)
-        h1_btn.pack(side="left")
-        h1_btn.bind("<Button-1>", lambda e: self._toggle_tag("h1"))
+        def _tb_btn(text, command, italic=False):
+            btn = tk.Label(toolbar, text=text, bg=BG, fg=FG_MUTED,
+                            font=("Segoe UI", 9, "bold", "italic") if italic else ("Segoe UI", 9, "bold"),
+                            cursor="hand2", padx=6)
+            btn.pack(side="left")
+            btn.bind("<Button-1>", lambda e: command())
+            return btn
 
-        bold_btn = tk.Label(toolbar, text="B", bg=BG, fg=FG_MUTED,
-                             font=("Segoe UI", 9, "bold"), cursor="hand2", padx=6)
-        bold_btn.pack(side="left")
-        bold_btn.bind("<Button-1>", lambda e: self._toggle_tag("bold"))
-
-        numbered_btn = tk.Label(toolbar, text="1.", bg=BG, fg=FG_MUTED,
-                                 font=("Segoe UI", 9, "bold"), cursor="hand2", padx=6)
-        numbered_btn.pack(side="left")
-        numbered_btn.bind("<Button-1>", lambda e: self._toggle_list("numbered"))
-
-        dash_btn = tk.Label(toolbar, text="—", bg=BG, fg=FG_MUTED,
-                             font=("Segoe UI", 9, "bold"), cursor="hand2", padx=6)
-        dash_btn.pack(side="left")
-        dash_btn.bind("<Button-1>", lambda e: self._toggle_list("dash"))
-
-        plus_btn = tk.Label(toolbar, text="+", bg=BG, fg=FG_MUTED,
-                             font=("Segoe UI", 9, "bold"), cursor="hand2", padx=6)
-        plus_btn.pack(side="left")
-        plus_btn.bind("<Button-1>", lambda e: self._toggle_list("plus"))
+        _tb_btn("H1", self._toggle_heading)
+        _tb_btn("B", lambda: self._toggle_inline("bold"))
+        _tb_btn("i", lambda: self._toggle_inline("italic"), italic=True)
+        _tb_btn("</>", lambda: self._toggle_inline("code"))
+        _tb_btn("❝", self._toggle_blockquote)
+        _tb_btn("1.", lambda: self._toggle_list("numbered"))
+        _tb_btn("—", lambda: self._toggle_list("dash"))
+        _tb_btn("+", lambda: self._toggle_list("plus"))
+        _tb_btn("☑", lambda: self._toggle_list("checkbox"))
+        _tb_btn("{ }", self._toggle_codeblock)
+        _tb_btn("🔗", self._insert_link)
 
         body = tk.Frame(outer, bg=BG)
         body.pack(fill="both", expand=True, padx=(10, 10), pady=(0, 8))
@@ -207,11 +229,33 @@ class NotesWidget(tk.Toplevel):
         )
         self.text.pack(side="left", fill="both", expand=True)
 
-        self.text.tag_configure("h1", font=("Segoe UI", 13, "bold"), foreground=FG_TITLE_TAG)
-        self.text.tag_configure("bold", font=("Segoe UI", 10, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h2", font=("Segoe UI", 13, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h3", font=("Segoe UI", 12, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h4", font=("Segoe UI", 11, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h5", font=("Segoe UI", 10, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h6", font=("Segoe UI", 10, "bold"), foreground=FG_MUTED)
+        self.text.tag_configure("bold", font=("Segoe UI", 10, "bold"))
+        self.text.tag_configure("italic", font=("Segoe UI", 10, "italic"))
+        self.text.tag_configure("bolditalic", font=("Segoe UI", 10, "bold", "italic"))
+        self.text.tag_configure("code", font=("Cascadia Mono", 9), background=BG_MENU, foreground=FG_TITLE_TAG)
+        self.text.tag_configure("codeblock", font=("Cascadia Mono", 9), background=BG_MENU,
+                                 lmargin1=8, lmargin2=8, spacing1=1, spacing3=1)
+        self.text.tag_configure("blockquote", lmargin1=16, lmargin2=16, foreground=FG_MUTED,
+                                 font=("Segoe UI", 10, "italic"))
         self.text.tag_configure("numbered", lmargin1=20, lmargin2=36)
         self.text.tag_configure("bullet1", lmargin1=40, lmargin2=56)
         self.text.tag_configure("bullet2", lmargin1=60, lmargin2=76)
+        self.text.tag_configure("checkbox_off", lmargin1=40, lmargin2=56)
+        self.text.tag_configure("checkbox_on", lmargin1=40, lmargin2=56,
+                                 foreground=FG_MUTED, overstrike=True)
+        self.text.tag_configure("hr", foreground=FG_MUTED, font=("Segoe UI", 8))
+        self.text.tag_configure("table", font=("Cascadia Mono", 9), foreground=FG_TEXT)
+        self.text.tag_configure("tableborder", font=("Cascadia Mono", 9), foreground=FG_MUTED)
+        self.text.tag_configure("tableheader", font=("Cascadia Mono", 9, "bold"),
+                                 background=BG_MENU, foreground="#ffffff")
+        self.text.tag_raise("tableborder")
+        self.text.tag_raise("tableheader")
         self.text.tag_configure("match", background=MATCH_BG)
         self.text.tag_configure("match_current", background=MATCH_CURRENT_BG)
         self.text.tag_configure("url", foreground=FG_ACCENT, underline=True)
@@ -219,6 +263,8 @@ class NotesWidget(tk.Toplevel):
         self.text.tag_bind("url", "<Button-1>", self._on_url_click)
         self.text.tag_bind("url", "<Enter>", lambda e: self.text.config(cursor="hand2"))
         self.text.tag_bind("url", "<Leave>", lambda e: self.text.config(cursor="xterm"))
+        self.text.tag_bind("checkbox_off", "<Button-1>", self._on_checkbox_click)
+        self.text.tag_bind("checkbox_on", "<Button-1>", self._on_checkbox_click)
 
         self.text.bind("<KeyRelease>", self._on_text_changed)
         self.text.bind("<Return>", self._on_return_key)
@@ -304,41 +350,297 @@ class NotesWidget(tk.Toplevel):
             self.after_cancel(self._save_after_id)
             self._save_after_id = None
         content = markup.serialize_from_text(self.text)
-        store.save_content(content)
-
-    def _toggle_tag(self, tagname):
-        other = "bold" if tagname == "h1" else "h1"
-        try:
-            start = self.text.index("sel.first linestart")
-            end = self.text.index("sel.last lineend")
-        except tk.TclError:
-            start = self.text.index("insert linestart")
-            end = self.text.index("insert lineend")
-
-        current_tags = self.text.tag_names(start)
-        if tagname in current_tags:
-            self.text.tag_remove(tagname, start, end)
+        if self.sync_engine.is_logged_in():
+            # Logged-in content lives in its own file, kept separate from
+            # notes.txt so logging out always reveals the local-only note untouched.
+            store.save_cloud_cache(content)
+            self.sync_engine.push_async(content)
         else:
-            self.text.tag_remove(other, start, end)
-            self.text.tag_remove("numbered", start, end)
-            self.text.tag_remove("bullet1", start, end)
-            self.text.tag_remove("bullet2", start, end)
-            self.text.tag_add(tagname, start, end)
+            store.save_content(content)
+
+    def _load_content_into_editor(self, content):
+        self._photo_refs.clear()
+        self._pending_images = set()
+        markup.render_into_text(self.text, content,
+                                 on_image=self._on_image_marker, on_hr=self._on_hr_marker)
+        for tagname in self.text._kq_links:
+            self._bind_link_tag(tagname)
+        self._highlight_urls()
+        if self._pending_images:
+            self.after(IMAGE_CHECK_INTERVAL_MS, self._check_lazy_images)
+
+    # ---------- cloud sync ----------
+    def _load_square_photo(self, path, size):
+        try:
+            img = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    def _make_avatar_photo(self, image_bytes, size):
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGBA").resize((size, size), Image.LANCZOS)
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+            img.putalpha(mask)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    def _update_cloud_icon(self):
+        if self.sync_engine.is_logged_in():
+            avatar_bytes = store.load_avatar_bytes()
+            photo = self._make_avatar_photo(avatar_bytes, AVATAR_SIZE) if avatar_bytes else None
+            if photo is not None:
+                self._avatar_photo = photo  # keep a reference so Tk doesn't garbage-collect it
+                self.cloud_btn.config(image=photo, text="")
+                return
+        if self._cloud_icon_photo is not None:
+            self.cloud_btn.config(image=self._cloud_icon_photo, text="")
+        else:
+            self.cloud_btn.config(image="", text="☁", fg=FG_MUTED)
+
+    def _on_cloud_click(self, event):
+        if not self.sync_engine.is_logged_in():
+            self.sync_engine.login_with_google_async()
+            return
+
+        email = self.sync_engine.account_email() or "?"
+        menu = ContextMenu(self, [
+            (f"Đã đăng nhập: {email}", None),
+            ("Đồng bộ ngay", self._sync_now),
+            None,
+            ("Đăng xuất", self._logout),
+        ])
+        menu.popup(event.x_root, event.y_root)
+
+    def _on_login_success(self):
+        self._update_cloud_icon()
+        # Always fetch this account's cloud content on login rather than pushing
+        # anything first — the local-only note and the account's note are
+        # separate documents, so login must never push local content into it.
+        self.sync_engine.pull_async(initial=True)
+        self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
+
+    def _sync_now(self):
+        self.sync_engine.pull_async()
+        self.sync_engine.push_async(markup.serialize_from_text(self.text))
+
+    def _logout(self):
+        self.sync_engine.logout()
+        # Local-only note and cloud-account note live in separate files, so
+        # logging out just switches the editor back to notes.txt untouched —
+        # nothing to merge or lose.
+        self._load_content_into_editor(store.load_content())
+        self._update_cloud_icon()
+
+    def _poll_sync(self):
+        if not self.sync_engine.is_logged_in():
+            return
+        self.sync_engine.pull_async()
+        self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
+
+    def _apply_remote_update(self, result):
+        local_content = markup.serialize_from_text(self.text)
+        st = sync_state.load_state()
+        if content_hash(local_content) != st.get("last_synced_hash"):
+            return  # local has unsynced edits; let the next push reconcile instead of clobbering
+        self._load_content_into_editor(result["content"])
+        store.save_cloud_cache(result["content"])
+        sync_state.update_after_sync(result["version"], content_hash(result["content"]))
+        self._update_cloud_icon()
+
+    def _apply_initial_pull(self, result):
+        # Logging in always shows this account's cloud content, even if that's
+        # empty for a brand-new account — it's a separate "document" from the
+        # local-only note, never auto-merged or auto-pushed into.
+        self._load_content_into_editor(result["content"])
+        store.save_cloud_cache(result["content"])
+        sync_state.update_after_sync(result["version"], content_hash(result["content"]))
+        self._update_cloud_icon()
+
+    def _drain_sync_events(self):
+        while True:
+            try:
+                kind, payload = self.sync_engine.events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "remote_update":
+                self._apply_remote_update(payload)
+            elif kind == "initial_pull":
+                self._apply_initial_pull(payload)
+            elif kind == "google_login_success":
+                self._on_login_success()
+            elif kind == "google_login_error":
+                self._update_cloud_icon()
+            elif kind == "synced":
+                self._update_cloud_icon()
+            elif kind == "conflict_resolved":
+                self._update_cloud_icon()
+            elif kind == "auth_required":
+                # Refresh also failed — the session is unrecoverable, so fall
+                # back to a clean logged-out state instead of a stuck icon.
+                self._logout()
+            elif kind == "error":
+                self._update_cloud_icon()
+        self.after(SYNC_EVENT_DRAIN_MS, self._drain_sync_events)
+
+    # ---------- inline formatting (bold / italic / code) ----------
+    _INLINE_TAGS = ("bold", "italic", "bolditalic", "code")
+
+    def _toggle_inline(self, tagname):
+        try:
+            start = self.text.index("sel.first")
+            end = self.text.index("sel.last")
+        except tk.TclError:
+            return  # inline formatting needs a selection
+
+        current = set(self.text.tag_names(start))
+
+        if tagname == "code":
+            is_code = "code" in current
+            for t in self._INLINE_TAGS:
+                self.text.tag_remove(t, start, end)
+            if not is_code:
+                self.text.tag_add("code", start, end)
+            self._on_text_changed()
+            return
+
+        has_bold = "bold" in current or "bolditalic" in current
+        has_italic = "italic" in current or "bolditalic" in current
+        for t in self._INLINE_TAGS:
+            self.text.tag_remove(t, start, end)
+
+        if tagname == "bold":
+            has_bold = not has_bold
+        else:
+            has_italic = not has_italic
+
+        if has_bold and has_italic:
+            self.text.tag_add("bolditalic", start, end)
+        elif has_bold:
+            self.text.tag_add("bold", start, end)
+        elif has_italic:
+            self.text.tag_add("italic", start, end)
+
         self._on_text_changed()
 
-    _LIST_TAGS = {"numbered": "numbered", "dash": "bullet1", "plus": "bullet2"}
-    _LIST_PREFIX_RE = re.compile(r"^(\d+\. |- |\+ )")
+    # ---------- block formatting (heading / blockquote / code block) ----------
+    _BLOCK_LEVEL_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
+                         "numbered", "bullet1", "bullet2", "checkbox_off",
+                         "checkbox_on", "hr", "codeblock")
 
-    def _toggle_list(self, kind):
-        tagname = self._LIST_TAGS[kind]
-
+    def _selected_line_range(self):
         try:
             start_line = int(self.text.index("sel.first").split(".")[0])
             end_line = int(self.text.index("sel.last").split(".")[0])
         except tk.TclError:
             start_line = end_line = int(self.text.index("insert").split(".")[0])
+        return start_line, end_line
 
-        turning_on = tagname not in self.text.tag_names(f"{start_line}.0")
+    def _strip_block_level(self, start, end):
+        for t in self._BLOCK_LEVEL_TAGS:
+            self.text.tag_remove(t, start, end)
+
+    def _strip_line_tags(self, start, end):
+        for t in self.text.tag_names():
+            if t == "sel":
+                continue
+            self.text.tag_remove(t, start, end)
+
+    def _toggle_heading(self):
+        start_line, end_line = self._selected_line_range()
+        for lineno in range(start_line, end_line + 1):
+            ls, le = f"{lineno}.0", f"{lineno}.end"
+            tags = self.text.tag_names(ls)
+            current_level = next((i for i in range(1, 7) if f"h{i}" in tags), 0)
+            self._strip_block_level(ls, le)
+            if current_level == 0:
+                self.text.tag_add("h1", ls, le)
+            elif current_level < 3:
+                self.text.tag_add(f"h{current_level + 1}", ls, le)
+        self._on_text_changed()
+
+    def _toggle_blockquote(self):
+        start_line, end_line = self._selected_line_range()
+        turning_on = "blockquote" not in self.text.tag_names(f"{start_line}.0")
+        for lineno in range(start_line, end_line + 1):
+            ls, le = f"{lineno}.0", f"{lineno}.end"
+            self._strip_block_level(ls, le)
+            if turning_on:
+                self.text.tag_add("blockquote", ls, le)
+        self._on_text_changed()
+
+    def _toggle_codeblock(self):
+        start_line, end_line = self._selected_line_range()
+        turning_on = "codeblock" not in self.text.tag_names(f"{start_line}.0")
+        for lineno in range(start_line, end_line + 1):
+            ls, le = f"{lineno}.0", f"{lineno}.end"
+            self._strip_line_tags(ls, le)
+            if turning_on:
+                self.text.tag_add("codeblock", ls, le)
+        self._on_text_changed()
+
+    # ---------- links ----------
+    def _bind_link_tag(self, tagname):
+        self.text.tag_configure(tagname, foreground=FG_ACCENT, underline=True)
+        self.text.tag_raise(tagname)
+        self.text.tag_bind(tagname, "<Button-1>", lambda e, t=tagname: self._open_link(t))
+        self.text.tag_bind(tagname, "<Enter>", lambda e: self.text.config(cursor="hand2"))
+        self.text.tag_bind(tagname, "<Leave>", lambda e: self.text.config(cursor="xterm"))
+
+    def _open_link(self, tagname):
+        url = self.text._kq_links.get(tagname, "")
+        if not url:
+            return
+        if url.startswith("www."):
+            url = "http://" + url
+        webbrowser.open(url)
+
+    def _insert_link(self):
+        try:
+            start = self.text.index("sel.first")
+            end = self.text.index("sel.last")
+        except tk.TclError:
+            return
+        url = simpledialog.askstring("Chèn liên kết", "URL:", parent=self)
+        if not url:
+            return
+        tagname = f"link_{len(self.text._kq_links)}"
+        self.text._kq_links[tagname] = url
+        self.text.tag_add(tagname, start, end)
+        self._bind_link_tag(tagname)
+        self._on_text_changed()
+
+    # ---------- checkbox lists ----------
+    def _on_checkbox_click(self, event):
+        index = self.text.index(f"@{event.x},{event.y}")
+        col = int(index.split(".")[1])
+        if col > 5:
+            return None  # click landed past the "- [ ] " marker; let normal editing happen
+        lineno = int(index.split(".")[0])
+        ls, le = f"{lineno}.0", f"{lineno}.end"
+        was_checked = "checkbox_on" in self.text.tag_names(ls)
+        new_prefix = "- [ ] " if was_checked else "- [x] "
+        self.text.delete(ls, f"{ls}+6c")
+        self.text.insert(ls, new_prefix)
+        old_tag, new_tag = ("checkbox_on", "checkbox_off") if was_checked else ("checkbox_off", "checkbox_on")
+        self.text.tag_remove(old_tag, ls, le)
+        self.text.tag_add(new_tag, ls, le)
+        self._on_text_changed()
+        return "break"
+
+    # ---------- ordered / bullet / checkbox lists ----------
+    _LIST_TAGS = {"numbered": "numbered", "dash": "bullet1", "plus": "bullet2", "checkbox": "checkbox_off"}
+    _LIST_ALL_TAGS = {"numbered", "bullet1", "bullet2", "checkbox_off", "checkbox_on"}
+    _LIST_PREFIX_RE = re.compile(r"^(\d+\. |- \[[ xX]\] |- |\+ )")
+
+    def _toggle_list(self, kind):
+        tagname = self._LIST_TAGS[kind]
+
+        start_line, end_line = self._selected_line_range()
+
+        turning_on = not (self._LIST_ALL_TAGS & set(self.text.tag_names(f"{start_line}.0")))
 
         next_num = 1
         if kind == "numbered" and turning_on and start_line > 1:
@@ -354,11 +656,7 @@ class NotesWidget(tk.Toplevel):
             line_end = f"{lineno}.end"
             line_text = self.text.get(line_start, line_end)
 
-            self.text.tag_remove("h1", line_start, line_end)
-            self.text.tag_remove("bold", line_start, line_end)
-            self.text.tag_remove("numbered", line_start, line_end)
-            self.text.tag_remove("bullet1", line_start, line_end)
-            self.text.tag_remove("bullet2", line_start, line_end)
+            self._strip_block_level(line_start, line_end)
 
             m = self._LIST_PREFIX_RE.match(line_text)
             if m:
@@ -370,8 +668,10 @@ class NotesWidget(tk.Toplevel):
                     next_num += 1
                 elif kind == "dash":
                     prefix = "- "
-                else:
+                elif kind == "plus":
                     prefix = "+ "
+                else:
+                    prefix = "- [ ] "
                 self.text.insert(line_start, prefix)
                 self.text.tag_add(tagname, line_start, f"{lineno}.end")
 
@@ -384,15 +684,21 @@ class NotesWidget(tk.Toplevel):
         line_text = self.text.get(line_start, line_end)
         tags = self.text.tag_names(line_start)
 
-        if "numbered" in tags:
-            tagname, prefix = "numbered", None
+        if "checkbox_off" in tags or "checkbox_on" in tags:
+            m = re.match(r"^- \[[ xX]\] (.*)$", line_text)
+            if m and not m.group(1).strip():
+                self.text.delete(line_start, line_end)
+                self._on_text_changed()
+                return "break"
+            tagname, prefix = "checkbox_off", "- [ ] "
+        elif "numbered" in tags:
             m = re.match(r"^(\d+)\. (.*)$", line_text)
             if m and not m.group(2).strip():
                 self.text.delete(line_start, line_end)
                 self._on_text_changed()
                 return "break"
             next_num = int(m.group(1)) + 1 if m else 1
-            prefix = f"{next_num}. "
+            tagname, prefix = "numbered", f"{next_num}. "
         elif "bullet1" in tags or "bullet2" in tags:
             tagname = "bullet1" if "bullet1" in tags else "bullet2"
             prefix = "- " if tagname == "bullet1" else "+ "
@@ -401,16 +707,25 @@ class NotesWidget(tk.Toplevel):
                 self.text.delete(line_start, line_end)
                 self._on_text_changed()
                 return "break"
+        elif "codeblock" in tags:
+            self.text.insert("insert", "\n")
+            new_line = int(self.text.index("insert").split(".")[0])
+            self.text.tag_add("codeblock", f"{new_line}.0", f"{new_line}.end")
+            self._on_text_changed()
+            return "break"
         else:
-            return None
+            self.text.insert("insert", "\n")
+            new_line = int(self.text.index("insert").split(".")[0])
+            self._strip_line_tags(f"{new_line}.0", f"{new_line}.end")
+            self._on_text_changed()
+            return "break"
 
         self.text.insert("insert", f"\n{prefix}")
         new_line = int(self.text.index("insert").split(".")[0])
 
         for ln in (lineno, new_line):
             ln_start, ln_end = f"{ln}.0", f"{ln}.end"
-            for t in ("h1", "bold", "numbered", "bullet1", "bullet2"):
-                self.text.tag_remove(t, ln_start, ln_end)
+            self._strip_block_level(ln_start, ln_end)
             self.text.tag_add(tagname, ln_start, ln_end)
 
         self._on_text_changed()
@@ -449,9 +764,30 @@ class NotesWidget(tk.Toplevel):
 
         if isinstance(clip, Image.Image):
             self._insert_image_now(clip)
-        else:
+            return
+
+        try:
+            clip_text = self.text.clipboard_get()
+        except tk.TclError:
+            clip_text = None
+
+        if clip_text is None:
             self.text.event_generate("<<Paste>>")
             self._on_text_changed()
+            return
+
+        try:
+            self.text.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+
+        before_links = set(self.text._kq_links)
+        markup.insert_markdown_at_cursor(self.text, clip_text, on_image=self._on_image_marker,
+                                          on_hr=self._on_hr_marker)
+        for tagname in set(self.text._kq_links) - before_links:
+            self._bind_link_tag(tagname)
+
+        self._on_text_changed()
 
     # ---------- images (paste, embed, lazy-load) ----------
     def _insert_image_now(self, pil_image):
@@ -485,6 +821,11 @@ class NotesWidget(tk.Toplevel):
         self._photo_refs[name] = placeholder
         self._pending_images.add(name)
         self._bind_image_click(name, file_id)
+
+    def _on_hr_marker(self):
+        frame = tk.Frame(self.text, bg=BORDER, height=2, width=280)
+        frame._kq_is_hr = True
+        self.text.window_create("end", window=frame)
 
     def _bind_image_click(self, name, file_id):
         idx = self.text.index(name)

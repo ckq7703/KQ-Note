@@ -4,3 +4,12 @@ build/
 dist/
 installer_output/
 *.spec
+
+# backend (FastAPI sync server)
+backend/.env
+backend/*.db
+
+# stray Google OAuth downloads at repo root (the one actually used by the
+# app lives at app/sync/google_client_secret.json and IS tracked on purpose)
+/client_secret_*.json
+app/sync/google_client_secret.json

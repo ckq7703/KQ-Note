@@ -8,6 +8,7 @@ DEFAULTS = {
     "hotkey_pin": "<ctrl>+<space>",
     "widget_geometry": "380x520+60+60",
     "always_on_top": True,
+    "sync_server_url": "https://note.smartpro.com.vn",
 }
 
 

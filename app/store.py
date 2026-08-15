@@ -60,3 +60,46 @@ def save_content(content):
     path = get_notes_path()
     with open(path, "w", encoding="utf-8") as f:
         f.write(content or "")
+
+
+def get_cloud_cache_path():
+    """Local mirror of whichever cloud account is currently logged in, kept
+    entirely separate from the local-only note so logging out/in never mixes
+    the two: logged out shows notes.txt, logged in shows this file."""
+    return os.path.join(get_data_dir(), "notes.cloud.txt")
+
+
+def load_cloud_cache():
+    path = get_cloud_cache_path()
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+
+def save_cloud_cache(content):
+    with open(get_cloud_cache_path(), "w", encoding="utf-8") as f:
+        f.write(content or "")
+
+
+def get_avatar_path():
+    return os.path.join(get_data_dir(), "avatar.png")
+
+
+def save_avatar(image_bytes):
+    with open(get_avatar_path(), "wb") as f:
+        f.write(image_bytes)
+
+
+def load_avatar_bytes():
+    path = get_avatar_path()
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return f.read()
+    return None
+
+
+def clear_avatar():
+    path = get_avatar_path()
+    if os.path.exists(path):
+        os.remove(path)
