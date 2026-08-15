@@ -911,16 +911,13 @@ class NotesWidget(tk.Toplevel):
             ("Tiêu đề (H1)", self._toggle_heading),
             ("Trích dẫn", self._toggle_blockquote),
             ("Khối code", self._toggle_codeblock),
+            ("Chèn liên kết", self._insert_link),
         ]
         list_items = [
             ("Danh sách số", lambda: self._toggle_list("numbered")),
             ("Gạch đầu dòng —", lambda: self._toggle_list("dash")),
             ("Gạch đầu dòng +", lambda: self._toggle_list("plus")),
             ("Checkbox", lambda: self._toggle_list("checkbox")),
-        ]
-        insert_items = [
-            ("Chèn liên kết", self._insert_link),
-            ("Chụp màn hình", self._start_screenshot),
         ]
 
         menu = ContextMenu(self, [
@@ -933,7 +930,7 @@ class NotesWidget(tk.Toplevel):
             ("Định dạng chữ", format_items),
             ("Khối nội dung", block_items),
             ("Danh sách", list_items),
-            ("Chèn", insert_items),
+            ("Chụp màn hình", self._start_screenshot),
         ])
         menu.popup(event.x_root, event.y_root)
 
