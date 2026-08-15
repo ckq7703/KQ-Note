@@ -137,3 +137,25 @@ class SyncClient:
         if resp.status_code != 200:
             raise SyncError(_error_message(resp))
         return resp.json()
+
+    def fetch_image_manifest(self):
+        resp = self._request("GET", "/images/manifest")
+        if resp.status_code != 200:
+            raise SyncError(_error_message(resp))
+        return set(resp.json()["ids"])
+
+    def upload_image(self, file_id, image_bytes):
+        resp = self._request(
+            "PUT", f"/images/{file_id}", data=image_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if resp.status_code != 204:
+            raise SyncError(_error_message(resp))
+
+    def download_image(self, file_id):
+        resp = self._request("GET", f"/images/{file_id}")
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise SyncError(_error_message(resp))
+        return resp.content

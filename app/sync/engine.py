@@ -21,7 +21,9 @@ which doesn't apply here since there's no shared "last synced" state yet.
 """
 
 import hashlib
+import os
 import queue
+import re
 import threading
 
 import requests
@@ -31,9 +33,18 @@ from app import store
 from . import auth_store, state as sync_state
 from .client import AuthRequiredError, OfflineError, SyncClient, SyncConflict, SyncError
 
+_IMAGE_ID_RE = re.compile(r"!\[\]\(kqnote-image:([^)]+)\)|\[\[image:([^\]]+)\]\]")
+
 
 def content_hash(text):
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _extract_image_ids(content):
+    ids = set()
+    for m in _IMAGE_ID_RE.finditer(content or ""):
+        ids.add(m.group(1) or m.group(2))
+    return ids
 
 
 class SyncEngine:
@@ -106,6 +117,7 @@ class SyncEngine:
 
         base_version = st.get("last_synced_version") or 0
         try:
+            self._upload_missing_images(content)
             result = self.client.put_note(content, base_version, st["device_id"])
             sync_state.update_after_sync(result["version"], content_hash(result["content"]))
             self.events.put(("synced", None))
@@ -129,6 +141,7 @@ class SyncEngine:
             return
         try:
             result = self.client.get_note()
+            self._download_missing_images(result["content"])
         except AuthRequiredError:
             self.events.put(("auth_required", None))
             return
@@ -148,3 +161,27 @@ class SyncEngine:
         if result["version"] == st.get("last_synced_version"):
             return  # already up to date
         self.events.put(("remote_update", result))
+
+    # ---- image blobs referenced by the note content (kqnote-image:<id>) ----
+    def _upload_missing_images(self, content):
+        ids = _extract_image_ids(content)
+        if not ids:
+            return
+        manifest = self.client.fetch_image_manifest()
+        for file_id in ids - manifest:
+            path = os.path.join(store.get_images_dir(), f"{file_id}.png")
+            if not os.path.exists(path):
+                continue  # referenced but never actually pasted/saved locally
+            with open(path, "rb") as f:
+                data = f.read()
+            self.client.upload_image(file_id, data)
+
+    def _download_missing_images(self, content):
+        for file_id in _extract_image_ids(content):
+            path = os.path.join(store.get_images_dir(), f"{file_id}.png")
+            if os.path.exists(path):
+                continue
+            data = self.client.download_image(file_id)
+            if data is not None:
+                with open(path, "wb") as f:
+                    f.write(data)

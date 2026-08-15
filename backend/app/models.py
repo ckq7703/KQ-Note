@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -35,3 +35,16 @@ class Note(Base):
     updated_by_device = Column(String, nullable=True)
 
     user = relationship("User", back_populates="note")
+
+
+class Image(Base):
+    """Pasted-image blobs, keyed by the same file_id the desktop app already
+    uses locally (app/store.py images/<file_id>.png). Composite PK (not just
+    file_id) so two different accounts can never collide on a uuid."""
+
+    __tablename__ = "images"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    id = Column(String, primary_key=True)
+    data = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)

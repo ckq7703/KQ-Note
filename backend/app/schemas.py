@@ -44,3 +44,7 @@ class NoteUpdate(BaseModel):
     content: str
     base_version: int
     device_id: str | None = None
+
+
+class ImageManifest(BaseModel):
+    ids: list[str]
