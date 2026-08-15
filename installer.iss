@@ -1,5 +1,5 @@
 #define MyAppName "KQ Note"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.2.0"
 #define MyAppExeName "KQNote.exe"
 
 [Setup]
