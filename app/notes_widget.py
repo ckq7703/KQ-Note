@@ -28,8 +28,10 @@ IMAGE_CHECK_INTERVAL_MS = 300
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 LOGO_PATH = os.path.join(ASSETS_DIR, "logo-kqnote.png")
 GOOGLE_ICON_PATH = os.path.join(ASSETS_DIR, "google-auth-icon.png")
+SCREENSHOT_ICON_PATH = os.path.join(ASSETS_DIR, "screenshot-30.png")
 CLOUD_ICON_SIZE = 18
 AVATAR_SIZE = 20
+SCREENSHOT_ICON_SIZE = 18
 
 BG = "#141416"
 BG_HEADER = "#1a1a1d"
@@ -186,6 +188,15 @@ class NotesWidget(tk.Toplevel):
         self.cloud_btn.pack(side="right")
         self.cloud_btn.bind("<Button-1>", self._on_cloud_click)
 
+        self._screenshot_icon_photo = self._load_square_photo(SCREENSHOT_ICON_PATH, SCREENSHOT_ICON_SIZE)
+        self.screenshot_btn = tk.Label(header, bg=BG_HEADER, padx=10, cursor="hand2")
+        if self._screenshot_icon_photo is not None:
+            self.screenshot_btn.config(image=self._screenshot_icon_photo)
+        else:
+            self.screenshot_btn.config(text="📷", fg=FG_MUTED, font=("Segoe UI", 10))
+        self.screenshot_btn.pack(side="right")
+        self.screenshot_btn.bind("<Button-1>", lambda e: self._start_screenshot())
+
         search_row = tk.Frame(outer, bg=BG, padx=10, pady=8)
         search_row.pack(fill="x")
 
@@ -233,7 +244,6 @@ class NotesWidget(tk.Toplevel):
         _tb_btn("☑", lambda: self._toggle_list("checkbox"))
         _tb_btn("{ }", self._toggle_codeblock)
         _tb_btn("🔗", self._insert_link)
-        _tb_btn("📷", self._start_screenshot)
 
         body = tk.Frame(outer, bg=BG)
         body.pack(fill="both", expand=True, padx=(10, 10), pady=(0, 8))
