@@ -1212,8 +1212,35 @@ class NotesWidget(tk.Toplevel):
         tag = f"imgtag_{file_id}"
         self.text.tag_add(tag, idx, f"{idx}+1c")
         self.text.tag_bind(tag, "<Button-1>", lambda e, fid=file_id: self._show_image_preview(fid))
+        self.text.tag_bind(tag, "<Button-3>", lambda e, fid=file_id: self._show_image_menu(e, fid))
         self.text.tag_bind(tag, "<Enter>", lambda e: self.text.config(cursor="hand2"))
         self.text.tag_bind(tag, "<Leave>", lambda e: self.text.config(cursor="xterm"))
+
+    def _show_image_menu(self, event, file_id):
+        menu = ContextMenu(self, [
+            ("Sao chép ảnh", lambda: self._copy_image_to_clipboard(file_id)),
+        ])
+        menu.popup(event.x_root, event.y_root)
+        return "break"
+
+    def _copy_image_to_clipboard(self, file_id):
+        path = os.path.join(store.get_images_dir(), f"{file_id}.png")
+        try:
+            import win32clipboard
+
+            img = Image.open(path).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, "BMP")
+            # CF_DIB wants the raw DIB data only, without BMP's 14-byte file header.
+            data = buf.getvalue()[14:]
+            buf.close()
+
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+        except Exception:
+            pass  # clipboard access can fail transiently (e.g. another app holding it)
 
     def _show_image_preview(self, file_id):
         path = os.path.join(store.get_images_dir(), f"{file_id}.png")
@@ -1252,6 +1279,19 @@ class NotesWidget(tk.Toplevel):
         x = (screen_w - pw) // 2
         y = (screen_h - ph) // 2
         preview.geometry(f"{pw + 2}x{ph + 2}+{x}+{y}")
+
+        copy_btn = tk.Label(preview, text="📋 Copy", bg=BG_MENU, fg=FG_TEXT,
+                             font=("Segoe UI", 9), padx=8, pady=4, cursor="hand2")
+        copy_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-8, y=8)
+
+        def do_copy(_event=None):
+            self._copy_image_to_clipboard(file_id)
+            copy_btn.config(text="✓ Copied")
+            self.after(1000, lambda: copy_btn.winfo_exists() and copy_btn.config(text="📋 Copy"))
+            return "break"  # stop this click from also bubbling up to the
+            # preview/lbl bindings below, which close the whole preview.
+
+        copy_btn.bind("<Button-1>", do_copy)
 
         preview.bind("<Escape>", lambda e: preview.destroy())
         preview.bind("<Button-1>", lambda e: preview.destroy())

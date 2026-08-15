@@ -3,3 +3,4 @@ pynput>=1.7.6
 Pillow>=10.0.0
 requests>=2.31
 keyring>=24.0
+pywin32>=306
