@@ -544,8 +544,9 @@ class NotesWidget(tk.Toplevel):
         self._render_notes_list()
 
     def show_detail_view(self, note_id=None):
-        if note_id and note_id != self.active_note_id:
-            self.flush_save()
+        if note_id:
+            if note_id != self.active_note_id:
+                self.flush_save()
             self.active_note_id = note_id
             store.set_active_note_id(note_id)
             content = store.load_note_by_id(note_id)
@@ -890,14 +891,18 @@ class NotesWidget(tk.Toplevel):
         if self._save_after_id is not None:
             self.after_cancel(self._save_after_id)
             self._save_after_id = None
+        if not hasattr(self, "text"):
+            return
         content = markup.serialize_from_text(self.text)
-        if self.sync_engine.is_logged_in():
-            # Logged-in content lives in its own file, kept separate from
-            # notes.txt so logging out always reveals the local-only note untouched.
-            store.save_cloud_cache(content)
-            self.sync_engine.push_async(content)
+        active_id = getattr(self, "active_note_id", None) or store.get_active_note_id()
+        if active_id:
+            store.save_note_by_id(active_id, content)
         else:
             store.save_content(content)
+
+        if self.sync_engine.is_logged_in():
+            store.save_cloud_cache(content)
+            self.sync_engine.push_async(content)
 
     def _load_content_into_editor(self, content):
         self._photo_refs.clear()
