@@ -1454,6 +1454,11 @@ class NotesWidget(tk.Toplevel):
         self._highlight_urls()
         if self._pending_images:
             self.after(IMAGE_CHECK_INTERVAL_MS, self._check_lazy_images)
+        if hasattr(self.text, "edit_reset"):
+            try:
+                self.text.edit_reset()
+            except Exception:
+                pass
 
     # ---------- cloud sync ----------
     def _load_square_photo(self, path, size):
