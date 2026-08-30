@@ -77,6 +77,28 @@ def _save_index(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def get_gemini_api_key():
+    idx = _ensure_multi_notes_initialized()
+    return idx.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")
+
+
+def set_gemini_api_key(key):
+    idx = _ensure_multi_notes_initialized()
+    idx["gemini_api_key"] = key
+    _save_index(idx)
+
+
+def get_selected_gemini_model():
+    idx = _ensure_multi_notes_initialized()
+    return idx.get("selected_gemini_model") or "gemini-1.5-flash"
+
+
+def set_selected_gemini_model(model_name):
+    idx = _ensure_multi_notes_initialized()
+    idx["selected_gemini_model"] = model_name
+    _save_index(idx)
+
+
 def _migrate_from_old_db():
     old_db = os.path.join(get_data_dir(), "notes.db")
     if not os.path.exists(old_db):

@@ -12,7 +12,7 @@ import webbrowser
 
 from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
-from app import markup, store
+from app import ai_helper, markup, store
 from app.config import load_config, save_config
 from app.sync import state as sync_state
 from app.sync.engine import SyncEngine, content_hash
@@ -204,25 +204,102 @@ class ContextMenu(tk.Toplevel):
         if self.winfo_exists():
             self.destroy()
 
-    def popup(self, x, y):
+    def popup(self, x, y, direction="down"):
         self.update_idletasks()
         main_w = self.frame.winfo_reqwidth()
         main_h = self.frame.winfo_reqheight()
         self._main_size = (main_w, main_h)
 
-        # Leave enough room for a flyout to open to the right without going
-        # off-screen — shift the whole menu left up front instead of trying
-        # to reposition a flyout after the fact.
         screen_w = self.winfo_screenwidth()
-        if x + main_w + self._ASSUMED_FLYOUT_WIDTH > screen_w:
-            x = max(0, screen_w - main_w - self._ASSUMED_FLYOUT_WIDTH)
+        screen_h = self.winfo_screenheight()
+
+        if x + main_w > screen_w:
+            x = max(0, screen_w - main_w - 8)
+
+        if direction == "up":
+            y = max(0, y - main_h)
+        else:
+            if y + main_h > screen_h:
+                y = max(0, screen_h - main_h - 8)
 
         self._anchor = (x, y)
         self.geometry(f"{main_w}x{main_h}+{x}+{y}")
         round_window(self, MENU_RADIUS)
         self.deiconify()
         self.focus_force()
-        self.grab_set()
+class AIPreviewDialog(tk.Toplevel):
+    def __init__(self, parent, content, on_insert, on_replace):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(bg=BG)
+        self.transient(parent)
+
+        # Center dialog over parent window
+        parent.update_idletasks()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+
+        w, h = 540, 440
+        cx = max(0, px + (pw - w) // 2)
+        cy = max(0, py + (ph - h) // 2)
+        self.geometry(f"{w}x{h}+{cx}+{cy}")
+
+        hdr = tk.Frame(self, bg=BG_HEADER, padx=10, pady=8)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="👁️ Xem trước kết quả AI (Rendered)", bg=BG_HEADER, fg=FG_ACCENT, font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        close_btn = tk.Label(hdr, text="✕", bg=BG_HEADER, fg=FG_MUTED, font=("Segoe UI", 10, "bold"), cursor="hand2", padx=4)
+        close_btn.pack(side="right")
+        close_btn.bind("<Button-1>", lambda e: self.destroy())
+
+        body = tk.Frame(self, bg=BG, padx=10, pady=10)
+        body.pack(fill="both", expand=True)
+
+        self.text = tk.Text(
+            body, bg=BG, fg=FG_TEXT, insertbackground=FG_TEXT,
+            relief="flat", wrap="word", font=("Segoe UI", 10), padx=8, pady=8,
+            borderwidth=0, highlightthickness=1, highlightbackground=BORDER,
+            selectbackground=SELECT_BG, selectforeground=FG_TEXT
+        )
+        scrollbar = ttk.Scrollbar(body, orient="vertical", style="Dark.Vertical.TScrollbar", command=self.text.yview)
+        self.text.configure(yscrollcommand=scrollbar.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.text.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h2", font=("Segoe UI", 13, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h3", font=("Segoe UI", 12, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h4", font=("Segoe UI", 11, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("h5", font=("Segoe UI", 10, "bold"), foreground=FG_TITLE_TAG)
+        self.text.tag_configure("bold", font=("Segoe UI", 10, "bold"))
+        self.text.tag_configure("italic", font=("Segoe UI", 10, "italic"))
+        self.text.tag_configure("bolditalic", font=("Segoe UI", 10, "bold", "italic"))
+        self.text.tag_configure("code", font=("Cascadia Mono", 9), background=BG_MENU, foreground=FG_ACCENT)
+        self.text.tag_configure("codeblock", font=("Cascadia Mono", 9), background=BG_MENU, foreground=FG_TEXT)
+        self.text.tag_configure("bullet1", font=("Segoe UI", 10), foreground=FG_ACCENT)
+        self.text.tag_configure("bullet2", font=("Segoe UI", 10), foreground=FG_MUTED)
+        self.text.tag_configure("numbered", font=("Segoe UI", 10, "bold"), foreground=FG_ACCENT)
+        self.text.tag_configure("checkbox_off", font=("Segoe UI", 10), foreground=FG_MUTED)
+        self.text.tag_configure("checkbox_on", font=("Segoe UI", 10), foreground=FG_ACCENT)
+
+        markup.render_into_text(self.text, content)
+
+        footer = tk.Frame(self, bg=BG_HEADER, padx=10, pady=8)
+        footer.pack(fill="x")
+
+        def _make_btn(parent_f, text, cmd, bg_col=BG_MENU, fg_col=FG_TEXT):
+            b = tk.Label(parent_f, text=text, bg=bg_col, fg=fg_col, font=("Segoe UI", 9, "bold"), cursor="hand2", padx=10, pady=4)
+            b.pack(side="left", padx=4)
+            b.bind("<Button-1>", lambda e: [cmd(), self.destroy()])
+            return b
+
+        _make_btn(footer, "📥 Chèn vào note", on_insert, FG_ACCENT, "#ffffff")
+        _make_btn(footer, "🔄 Thay thế note", on_replace, BG_MENU, FG_TEXT)
+        _make_btn(footer, "Đóng", lambda: None, BG_MENU, FG_MUTED)
+        self.after(10, lambda: round_window(self, 12))
 
 
 class NotesWidget(tk.Toplevel):
@@ -388,25 +465,68 @@ class NotesWidget(tk.Toplevel):
         toolbar = tk.Frame(parent, bg=BG)
         toolbar.pack(fill="x", padx=10, pady=(6, 4))
 
-        def _tb_btn(text, command, italic=False):
-            btn = tk.Label(toolbar, text=text, bg=BG, fg=FG_MUTED,
+        # Pack AI button FIRST on right so it is ALWAYS visible
+        self.ai_btn = tk.Label(
+            toolbar, text="✨ AI", bg=BG, fg=FG_ACCENT,
+            font=("Segoe UI", 9, "bold"), cursor="hand2", padx=8, pady=2
+        )
+        self.ai_btn.pack(side="right")
+        self.ai_btn.bind("<Button-1>", lambda e: self._toggle_ai_footer())
+        self.ai_btn.bind("<Enter>", lambda e: self.ai_btn.config(bg=BG_MENU))
+        self.ai_btn.bind("<Leave>", lambda e: self.ai_btn.config(bg=BG if not getattr(self, "ai_footer_visible", False) else BG_MENU))
+
+        # Wide formatting frame (all 11 buttons)
+        self.tb_wide_frame = tk.Frame(toolbar, bg=BG)
+        self.tb_wide_frame.pack(side="left")
+
+        def _tb_btn(parent_frame, text, command, italic=False):
+            btn = tk.Label(parent_frame, text=text, bg=BG, fg=FG_MUTED,
                             font=("Segoe UI", 9, "bold", "italic") if italic else ("Segoe UI", 9, "bold"),
-                            cursor="hand2", padx=6)
+                            cursor="hand2", padx=5)
             btn.pack(side="left")
             btn.bind("<Button-1>", lambda e: command())
+            btn.bind("<Enter>", lambda e: btn.config(bg=BG_MENU, fg=FG_TEXT))
+            btn.bind("<Leave>", lambda e: btn.config(bg=BG, fg=FG_MUTED))
             return btn
 
-        _tb_btn("H1", self._toggle_heading)
-        _tb_btn("B", lambda: self._toggle_inline("bold"))
-        _tb_btn("i", lambda: self._toggle_inline("italic"), italic=True)
-        _tb_btn("</>", lambda: self._toggle_inline("code"))
-        _tb_btn("❝", self._toggle_blockquote)
-        _tb_btn("1.", lambda: self._toggle_list("numbered"))
-        _tb_btn("—", lambda: self._toggle_list("dash"))
-        _tb_btn("+", lambda: self._toggle_list("plus"))
-        _tb_btn("☑", lambda: self._toggle_list("checkbox"))
-        _tb_btn("{ }", self._toggle_codeblock)
-        _tb_btn("🔗", self._insert_link)
+        _tb_btn(self.tb_wide_frame, "H1", self._toggle_heading)
+        _tb_btn(self.tb_wide_frame, "B", lambda: self._toggle_inline("bold"))
+        _tb_btn(self.tb_wide_frame, "i", lambda: self._toggle_inline("italic"), italic=True)
+        _tb_btn(self.tb_wide_frame, "</>", lambda: self._toggle_inline("code"))
+        _tb_btn(self.tb_wide_frame, "❝", self._toggle_blockquote)
+        _tb_btn(self.tb_wide_frame, "1.", lambda: self._toggle_list("numbered"))
+        _tb_btn(self.tb_wide_frame, "—", lambda: self._toggle_list("dash"))
+        _tb_btn(self.tb_wide_frame, "+", lambda: self._toggle_list("plus"))
+        _tb_btn(self.tb_wide_frame, "☑", lambda: self._toggle_list("checkbox"))
+        _tb_btn(self.tb_wide_frame, "{ }", self._toggle_codeblock)
+        _tb_btn(self.tb_wide_frame, "🔗", self._insert_link)
+
+        # Compact formatting frame (essential buttons + dropdown menu for narrow screens)
+        self.tb_compact_frame = tk.Frame(toolbar, bg=BG)
+
+        _tb_btn(self.tb_compact_frame, "B", lambda: self._toggle_inline("bold"))
+        _tb_btn(self.tb_compact_frame, "i", lambda: self._toggle_inline("italic"), italic=True)
+        _tb_btn(self.tb_compact_frame, "</>", lambda: self._toggle_inline("code"))
+
+        fmt_dropdown_btn = tk.Label(
+            self.tb_compact_frame, text="🎨 Định dạng ▾", bg=BG, fg=FG_MUTED,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
+        )
+        fmt_dropdown_btn.pack(side="left")
+        fmt_dropdown_btn.bind("<Button-1>", self._show_toolbar_format_menu)
+        fmt_dropdown_btn.bind("<Enter>", lambda e: fmt_dropdown_btn.config(bg=BG_MENU, fg=FG_TEXT))
+        fmt_dropdown_btn.bind("<Leave>", lambda e: fmt_dropdown_btn.config(bg=BG, fg=FG_MUTED))
+
+        # Responsive listener on top toolbar resize
+        def _on_toolbar_resize(event):
+            if event.width < 420:
+                self.tb_wide_frame.pack_forget()
+                self.tb_compact_frame.pack(side="left")
+            else:
+                self.tb_compact_frame.pack_forget()
+                self.tb_wide_frame.pack(side="left")
+
+        toolbar.bind("<Configure>", _on_toolbar_resize)
 
         body = tk.Frame(parent, bg=BG)
         body.pack(fill="both", expand=True, padx=(10, 10), pady=(0, 8))
@@ -467,6 +587,426 @@ class NotesWidget(tk.Toplevel):
         self.text.bind("<MouseWheel>", lambda e: self.text.yview_scroll(-1 * int(e.delta / 120), "units"))
         self.text.bind("<Button-3>", self._show_text_menu)
         self.search_entry.bind("<Button-3>", self._show_entry_menu)
+
+        self._build_ai_footer(parent)
+
+    def _build_ai_footer(self, parent):
+        self.ai_footer_visible = False
+        self.ai_chat_history = []
+        self.ai_raw_response = ""
+        self.ai_view_mode = "rendered"
+
+        self.ai_footer_frame = tk.Frame(
+            parent, bg=BG_HEADER, highlightbackground=BORDER, highlightthickness=1, padx=8, pady=4
+        )
+
+        # Top Resizer Bar (Draggable to resize response box height upward/downward)
+        resizer = tk.Frame(self.ai_footer_frame, bg=BORDER, height=6, cursor="size_ns")
+        resizer.pack(fill="x", side="top", pady=(0, 2))
+
+        def _on_resizer_press(e):
+            self._ai_drag_start_y = e.y_root
+            try:
+                self._ai_init_h = int(self.ai_res_text.cget("height"))
+            except Exception:
+                self._ai_init_h = 4
+            self.ai_response_box.pack(fill="x", pady=4)
+
+        def _on_resizer_motion(e):
+            if hasattr(self, "_ai_drag_start_y") and hasattr(self, "_ai_init_h"):
+                dy = self._ai_drag_start_y - e.y_root
+                line_delta = int(dy // 14)
+                new_h = max(2, min(35, self._ai_init_h + line_delta))
+                self.ai_res_text.configure(height=new_h)
+
+        resizer.bind("<ButtonPress-1>", _on_resizer_press)
+        resizer.bind("<B1-Motion>", _on_resizer_motion)
+
+        # Header row inside AI footer
+        hdr_row = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
+        hdr_row.pack(fill="x", pady=(0, 4))
+
+        self.ai_title_lbl = tk.Label(
+            hdr_row, text="✦ Trợ lý AI (Gemini)", bg=BG_HEADER, fg=FG_ACCENT,
+            font=("Segoe UI", 9, "bold")
+        )
+        self.ai_title_lbl.pack(side="left")
+
+        self.ai_model_lbl = tk.Label(
+            hdr_row, text="", bg=BG_HEADER, fg=FG_MUTED,
+            font=("Segoe UI", 8, "italic")
+        )
+        self.ai_model_lbl.pack(side="left", padx=(4, 0))
+
+        # Close button on far right
+        close_btn = tk.Label(
+            hdr_row, text="✕", bg=BG_HEADER, fg=FG_MUTED,
+            font=("Segoe UI", 9, "bold"), cursor="hand2", padx=4
+        )
+        close_btn.pack(side="right")
+        close_btn.bind("<Button-1>", lambda e: self._toggle_ai_footer())
+        close_btn.bind("<Enter>", lambda e: close_btn.config(fg=FG_TEXT))
+        close_btn.bind("<Leave>", lambda e: close_btn.config(fg=FG_MUTED))
+
+        # Wide header menus frame (horizontal)
+        self.hdr_wide_menus = tk.Frame(hdr_row, bg=BG_HEADER)
+        self.hdr_wide_menus.pack(side="right")
+
+        settings_menu_btn = tk.Label(
+            self.hdr_wide_menus, text="⚙️ Cài đặt ▾", bg=BG_HEADER, fg=FG_MUTED,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=1
+        )
+        settings_menu_btn.pack(side="right", padx=3)
+        settings_menu_btn.bind("<Button-1>", self._show_ai_settings_menu)
+        settings_menu_btn.bind("<Enter>", lambda e: settings_menu_btn.config(bg=BG_MENU, fg=FG_TEXT))
+        settings_menu_btn.bind("<Leave>", lambda e: settings_menu_btn.config(bg=BG_HEADER, fg=FG_MUTED))
+
+        actions_menu_btn = tk.Label(
+            self.hdr_wide_menus, text="⚡ Thao tác ▾", bg=BG_HEADER, fg=FG_ACCENT,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=1
+        )
+        actions_menu_btn.pack(side="right", padx=3)
+        actions_menu_btn.bind("<Button-1>", self._show_ai_actions_menu)
+        actions_menu_btn.bind("<Enter>", lambda e: actions_menu_btn.config(bg=FG_ACCENT, fg="#ffffff"))
+        actions_menu_btn.bind("<Leave>", lambda e: actions_menu_btn.config(bg=BG_HEADER, fg=FG_ACCENT))
+
+        # Compact header menu frame (single dropdown button for narrow header)
+        self.hdr_compact_menu = tk.Frame(hdr_row, bg=BG_HEADER)
+
+        compact_hdr_btn = tk.Label(
+            self.hdr_compact_menu, text="⚙️ AI ▾", bg=BG_HEADER, fg=FG_ACCENT,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=1
+        )
+        compact_hdr_btn.pack(side="right", padx=3)
+        compact_hdr_btn.bind("<Button-1>", self._show_ai_combined_header_menu)
+        compact_hdr_btn.bind("<Enter>", lambda e: compact_hdr_btn.config(bg=BG_MENU, fg=FG_TEXT))
+        compact_hdr_btn.bind("<Leave>", lambda e: compact_hdr_btn.config(bg=BG_HEADER, fg=FG_ACCENT))
+
+        # Response display box (hidden until AI responds or loading)
+        self.ai_response_box = tk.Frame(self.ai_footer_frame, bg=BG)
+
+        self.ai_res_text = tk.Text(
+            self.ai_response_box, height=5, bg=BG, fg=FG_TEXT, wrap="word",
+            font=("Segoe UI", 9), relief="flat", highlightthickness=0,
+            selectbackground=SELECT_BG, selectforeground=FG_TEXT
+        )
+        self.ai_res_text.tag_configure("h1", font=("Segoe UI", 12, "bold"), foreground=FG_TITLE_TAG)
+        self.ai_res_text.tag_configure("h2", font=("Segoe UI", 11, "bold"), foreground=FG_TITLE_TAG)
+        self.ai_res_text.tag_configure("h3", font=("Segoe UI", 10, "bold"), foreground=FG_TITLE_TAG)
+        self.ai_res_text.tag_configure("h4", font=("Segoe UI", 9, "bold"), foreground=FG_TITLE_TAG)
+        self.ai_res_text.tag_configure("bold", font=("Segoe UI", 9, "bold"))
+        self.ai_res_text.tag_configure("italic", font=("Segoe UI", 9, "italic"))
+        self.ai_res_text.tag_configure("bolditalic", font=("Segoe UI", 9, "bold", "italic"))
+        self.ai_res_text.tag_configure("code", font=("Cascadia Mono", 9), background=BG_MENU, foreground=FG_ACCENT)
+        self.ai_res_text.tag_configure("codeblock", font=("Cascadia Mono", 9), background=BG_MENU, foreground=FG_TEXT)
+        self.ai_res_text.tag_configure("bullet1", font=("Segoe UI", 9), foreground=FG_ACCENT)
+        self.ai_res_text.tag_configure("bullet2", font=("Segoe UI", 9), foreground=FG_MUTED)
+        self.ai_res_text.tag_configure("numbered", font=("Segoe UI", 9, "bold"), foreground=FG_ACCENT)
+        self.ai_res_text.tag_configure("checkbox_off", font=("Segoe UI", 9), foreground=FG_MUTED)
+        self.ai_res_text.tag_configure("checkbox_on", font=("Segoe UI", 9), foreground=FG_ACCENT)
+
+        ai_res_scroll = ttk.Scrollbar(self.ai_response_box, orient="vertical", style="Dark.Vertical.TScrollbar", command=self.ai_res_text.yview)
+        self.ai_res_text.configure(yscrollcommand=ai_res_scroll.set)
+        self.ai_res_text.pack(side="left", fill="x", expand=True)
+        ai_res_scroll.pack(side="right", fill="y")
+
+        # Actions row (Toggle View / Pop-up Preview / Insert / Replace / Copy)
+        self.ai_actions_frame = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
+
+        # Wide view frame (horizontal buttons)
+        self.ai_actions_wide_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
+        self.ai_actions_wide_frame.pack(side="left")
+
+        def _act_btn(parent_frame, text, command):
+            btn = tk.Label(
+                parent_frame, text=text, bg=BG_MENU, fg=FG_TEXT,
+                font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
+            )
+            btn.pack(side="left", padx=2)
+            btn.bind("<Button-1>", lambda e: command())
+            btn.bind("<Enter>", lambda e: btn.config(bg=FG_ACCENT, fg="#ffffff"))
+            btn.bind("<Leave>", lambda e: btn.config(bg=BG_MENU, fg=FG_TEXT))
+
+        self.ai_toggle_view_btn = tk.Label(
+            self.ai_actions_wide_frame, text="📝 Xem Raw", bg=BG_MENU, fg=FG_TEXT,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
+        )
+        self.ai_toggle_view_btn.pack(side="left", padx=2)
+        self.ai_toggle_view_btn.bind("<Button-1>", lambda e: self._toggle_ai_view_mode())
+        self.ai_toggle_view_btn.bind("<Enter>", lambda e: self.ai_toggle_view_btn.config(bg=FG_ACCENT, fg="#ffffff"))
+        self.ai_toggle_view_btn.bind("<Leave>", lambda e: self._update_toggle_btn_style())
+
+        _act_btn(self.ai_actions_wide_frame, "👁️ Pop-up", self._ai_open_preview)
+        _act_btn(self.ai_actions_wide_frame, "📥 Chèn", self._ai_insert_at_cursor)
+        _act_btn(self.ai_actions_wide_frame, "🔄 Thay thế", self._ai_replace_content)
+        _act_btn(self.ai_actions_wide_frame, "📋 Sao chép", self._ai_copy_response)
+
+        # Compact view frame (collapsed dropdown button for narrow screens)
+        self.ai_actions_compact_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
+
+        compact_dropdown_btn = tk.Label(
+            self.ai_actions_compact_frame, text="⚡ Thao tác kết quả ▾", bg=FG_ACCENT, fg="#ffffff",
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=8, pady=2
+        )
+        compact_dropdown_btn.pack(side="left")
+        compact_dropdown_btn.bind("<Button-1>", self._show_ai_result_actions_menu)
+        compact_dropdown_btn.bind("<Enter>", lambda e: compact_dropdown_btn.config(bg=BG_MENU, fg=FG_TEXT))
+        compact_dropdown_btn.bind("<Leave>", lambda e: compact_dropdown_btn.config(bg=FG_ACCENT, fg="#ffffff"))
+
+        # Responsive listener on ai_footer_frame width resize
+        def _on_footer_resize(event):
+            if event.width < 420:
+                self.ai_title_lbl.config(text="✦ AI")
+                self.hdr_wide_menus.pack_forget()
+                self.hdr_compact_menu.pack(side="right")
+                self.ai_actions_wide_frame.pack_forget()
+                self.ai_actions_compact_frame.pack(side="left")
+            else:
+                self.ai_title_lbl.config(text="✦ Trợ lý AI (Gemini)")
+                self.hdr_compact_menu.pack_forget()
+                self.hdr_wide_menus.pack(side="right")
+                self.ai_actions_compact_frame.pack_forget()
+                self.ai_actions_wide_frame.pack(side="left")
+
+        self.ai_footer_frame.bind("<Configure>", _on_footer_resize)
+
+        # Input Row (Entry + Send Button)
+        input_row = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
+        input_row.pack(fill="x", pady=(4, 0))
+
+        self.ai_entry = tk.Entry(
+            input_row, bg=BG, fg=FG_TEXT, insertbackground=FG_TEXT,
+            relief="flat", font=("Segoe UI", 9), highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=FG_ACCENT
+        )
+        self.ai_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
+        self.ai_entry.bind("<Return>", lambda e: self._send_ai_prompt())
+
+        self.ai_send_btn = tk.Label(
+            input_row, text="Gửi ➔", bg=FG_ACCENT, fg="#ffffff",
+            font=("Segoe UI", 9, "bold"), cursor="hand2", padx=10, pady=3
+        )
+        self.ai_send_btn.pack(side="right")
+        self.ai_send_btn.bind("<Button-1>", lambda e: self._send_ai_prompt())
+
+    def _show_ai_actions_menu(self, event):
+        items = [
+            ("📝 Tóm tắt ghi chú", lambda: self._send_ai_prompt("Hãy tóm tắt ngắn gọn các ý chính của ghi chú này dưới dạng bullet-point Markdown.")),
+            ("✨ Sửa & Chuẩn hóa MD", lambda: self._send_ai_prompt("Hãy sửa và chuẩn hóa toàn bộ định dạng Markdown (tiêu đề, danh sách, codeblock) cho ghi chú này.")),
+            ("💡 Giải thích Code/Lệnh", lambda: self._send_ai_prompt("Hãy giải thích chi tiết các câu lệnh/code trong ghi chú này.")),
+            ("✍️ Viết tiếp nội dung", lambda: self._send_ai_prompt("Hãy viết tiếp đoạn tiếp theo cho nội dung ghi chú này.")),
+        ]
+        menu = ContextMenu(self, items)
+        menu.popup(event.x_root, event.y_root, direction="up")
+
+    def _show_ai_combined_header_menu(self, event):
+        current_model = store.get_selected_gemini_model()
+        items = [
+            ("📝 Tóm tắt ghi chú", lambda: self._send_ai_prompt("Hãy tóm tắt ngắn gọn các ý chính của ghi chú này dưới dạng bullet-point Markdown.")),
+            ("✨ Sửa & Chuẩn hóa MD", lambda: self._send_ai_prompt("Hãy sửa và chuẩn hóa toàn bộ định dạng Markdown (tiêu đề, danh sách, codeblock) cho ghi chú này.")),
+            ("💡 Giải thích Code/Lệnh", lambda: self._send_ai_prompt("Hãy giải thích chi tiết các câu lệnh/code trong ghi chú này.")),
+            ("✍️ Viết tiếp nội dung", lambda: self._send_ai_prompt("Hãy viết tiếp đoạn tiếp theo cho nội dung ghi chú này.")),
+            None,
+            ("⚙️ Cấu hình Gemini API Key", self._prompt_gemini_key),
+            (f"🤖 Chọn Model... [{current_model}]", lambda: self._show_model_select_menu(event)),
+            ("🧹 Dọn sạch lịch sử chat", self._clear_ai_chat_history),
+        ]
+        menu = ContextMenu(self, items)
+        menu.popup(event.x_root, event.y_root, direction="up")
+
+    def _show_ai_result_actions_menu(self, event):
+        mode = getattr(self, "ai_view_mode", "rendered")
+        toggle_label = "📝 Xem mã Raw" if mode == "rendered" else "👁 Xem Rendered"
+
+        items = [
+            (toggle_label, self._toggle_ai_view_mode),
+            ("👁 Pop-up Xem trước", self._ai_open_preview),
+            ("📥 Chèn vào vị trí con trỏ", self._ai_insert_at_cursor),
+            ("🔄 Thay thế nội dung note", self._ai_replace_content),
+            ("📋 Sao chép câu trả lời", self._ai_copy_response),
+        ]
+        menu = ContextMenu(self, items)
+        menu.popup(event.x_root, event.y_root, direction="up")
+
+    def _show_toolbar_format_menu(self, event):
+        items = [
+            ("H1  Tiêu đề (Heading)", self._toggle_heading),
+            ("❝  Trích dẫn (Blockquote)", self._toggle_blockquote),
+            ("1.  Danh sách số", lambda: self._toggle_list("numbered")),
+            ("—  Danh sách gạch đầu dòng", lambda: self._toggle_list("dash")),
+            ("+  Danh sách dấu cộng", lambda: self._toggle_list("plus")),
+            ("☑  Danh sách công việc", lambda: self._toggle_list("checkbox")),
+            ("{ } Khối Code", self._toggle_codeblock),
+            ("🔗  Chèn liên kết URL", self._insert_link),
+        ]
+        menu = ContextMenu(self, items)
+        menu.popup(event.x_root, event.y_root, direction="down")
+
+    def _show_ai_settings_menu(self, event):
+        current_model = store.get_selected_gemini_model()
+        items = [
+            ("⚙️ Cấu hình Gemini API Key", self._prompt_gemini_key),
+            (f"🤖 Chọn Model AI... [{current_model}]", lambda: self._show_model_select_menu(event)),
+            ("🧹 Dọn sạch lịch sử chat", self._clear_ai_chat_history),
+        ]
+        menu = ContextMenu(self, items)
+        menu.popup(event.x_root, event.y_root, direction="up")
+
+    def _ai_open_preview(self):
+        res = self.ai_res_text.get("1.0", "end-1c").strip()
+        if res and "⏳ Trợ lý AI đang suy nghĩ" not in res:
+            AIPreviewDialog(
+                self,
+                res,
+                on_insert=self._ai_insert_at_cursor,
+                on_replace=self._ai_replace_content
+            )
+        else:
+            messagebox.showinfo("KQ AI Assistant", "Chưa có kết quả AI để xem trước!", parent=self)
+
+    def _show_model_select_menu(self, event):
+        key = store.get_gemini_api_key()
+        dynamic_models = ai_helper.get_available_models(key)
+
+        default_list = [
+            "gemini-1.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-pro",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash-lite",
+        ]
+
+        models_list = []
+        for m in dynamic_models + default_list:
+            if m not in models_list:
+                models_list.append(m)
+
+        menu_items = []
+        curr = store.get_selected_gemini_model()
+        for m in models_list:
+            prefix = "✓ " if m == curr else "   "
+
+            def _make_cmd(selected_model):
+                def _cb():
+                    store.set_selected_gemini_model(selected_model)
+                return _cb
+
+            menu_items.append((f"{prefix}{m}", _make_cmd(m)))
+
+        menu = ContextMenu(self, menu_items)
+        menu.popup(event.x_root, event.y_root, direction="up")
+
+    def _clear_ai_chat_history(self):
+        self.ai_chat_history = []
+        messagebox.showinfo("KQ AI Assistant", "Đã xóa lịch sử hội thoại phiên này!", parent=self)
+
+    def _prompt_gemini_key(self):
+        current = store.get_gemini_api_key()
+        key = simpledialog.askstring(
+            "Cấu hình Gemini API Key",
+            "Nhập Gemini API Key từ Google AI Studio (aistudio.google.com):",
+            initialvalue=current,
+            parent=self
+        )
+        if key is not None:
+            store.set_gemini_api_key(key.strip())
+            messagebox.showinfo("KQ AI Assistant", "Đã lưu Gemini API Key thành công!", parent=self)
+
+    def _toggle_ai_footer(self):
+        if self.ai_footer_visible:
+            self.ai_footer_frame.pack_forget()
+            self.ai_footer_visible = False
+            self.ai_btn.config(bg=BG, fg=FG_MUTED)
+        else:
+            self.ai_footer_frame.pack(fill="x", side="bottom", padx=10, pady=(0, 8))
+            self.ai_footer_visible = True
+            self.ai_btn.config(bg=BG_MENU, fg=FG_ACCENT)
+            self.ai_entry.focus_set()
+
+    def _update_ai_response_display(self):
+        raw = getattr(self, "ai_raw_response", "")
+        mode = getattr(self, "ai_view_mode", "rendered")
+        self.ai_res_text.delete("1.0", "end")
+
+        if mode == "rendered":
+            markup.render_into_text(self.ai_res_text, raw)
+        else:
+            self.ai_res_text.insert("end", raw)
+        self._update_toggle_btn_style()
+
+    def _update_toggle_btn_style(self):
+        if not hasattr(self, "ai_toggle_view_btn"):
+            return
+        mode = getattr(self, "ai_view_mode", "rendered")
+        if mode == "rendered":
+            self.ai_toggle_view_btn.config(text="📝 Xem Raw", bg=BG_MENU, fg=FG_TEXT)
+        else:
+            self.ai_toggle_view_btn.config(text="👁️ Render", bg=FG_ACCENT, fg="#ffffff")
+
+    def _toggle_ai_view_mode(self):
+        curr = getattr(self, "ai_view_mode", "rendered")
+        self.ai_view_mode = "raw" if curr == "rendered" else "rendered"
+        self._update_ai_response_display()
+
+    def _send_ai_prompt(self, custom_prompt=None):
+        prompt = custom_prompt or self.ai_entry.get().strip()
+        if not prompt:
+            return
+
+        if not custom_prompt:
+            self.ai_entry.delete(0, "end")
+
+        self.ai_response_box.pack(fill="x", pady=4)
+        self.ai_res_text.delete("1.0", "end")
+        self.ai_res_text.insert("end", "⏳ Trợ lý AI đang suy nghĩ và xử lý...")
+        self.ai_actions_frame.pack_forget()
+
+        context = self.text.get("1.0", "end-1c")
+        api_key = store.get_gemini_api_key()
+
+        def _on_response(success, result_text, model_used):
+            def _ui_update():
+                self.ai_raw_response = result_text
+                self.ai_view_mode = "rendered"
+                self._update_ai_response_display()
+                if success:
+                    self.ai_actions_frame.pack(fill="x", pady=(4, 0))
+                    if model_used:
+                        self.ai_model_lbl.config(text=f"[{model_used}]")
+                    self.ai_chat_history.append({"role": "user", "text": prompt})
+                    self.ai_chat_history.append({"role": "model", "text": result_text})
+                else:
+                    self.ai_model_lbl.config(text="")
+            self.after(0, _ui_update)
+
+        preferred_model = store.get_selected_gemini_model()
+        ai_helper.ask_gemini_async(
+            prompt,
+            context=context,
+            callback=_on_response,
+            api_key=api_key,
+            preferred_model=preferred_model,
+            chat_history=getattr(self, "ai_chat_history", []),
+        )
+
+    def _ai_insert_at_cursor(self):
+        res = getattr(self, "ai_raw_response", "").strip() or self.ai_res_text.get("1.0", "end-1c").strip()
+        if res and "⏳ Trợ lý AI đang suy nghĩ" not in res:
+            markup.insert_markdown_at_cursor(self.text, "\n\n" + res, on_image=self._on_image_marker)
+            self._on_text_changed()
+
+    def _ai_replace_content(self):
+        res = getattr(self, "ai_raw_response", "").strip() or self.ai_res_text.get("1.0", "end-1c").strip()
+        if res and "⏳ Trợ lý AI đang suy nghĩ" not in res:
+            self._load_content_into_editor(res)
+            self._on_text_changed()
+
+    def _ai_copy_response(self):
+        res = getattr(self, "ai_raw_response", "").strip() or self.ai_res_text.get("1.0", "end-1c").strip()
+        if res and "⏳ Trợ lý AI đang suy nghĩ" not in res:
+            self.clipboard_clear()
+            self.clipboard_append(res)
+            messagebox.showinfo("KQ AI Assistant", "Đã sao chép câu trả lời vào bộ nhớ tạm!", parent=self)
 
     def _build_list_view(self, parent):
         top_bar = tk.Frame(parent, bg=BG, padx=10, pady=8)
