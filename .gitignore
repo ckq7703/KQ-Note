@@ -1,15 +1,35 @@
+# Python Caches & Environments
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Build & Installer Artifacts
 build/
 dist/
 installer_output/
-*.spec
+*.egg-info/
 
-# backend (FastAPI sync server)
-backend/.env
+# Databases
+*.db
+*.sqlite
+*.sqlite3
 backend/*.db
 
-# stray Google OAuth downloads at repo root (the one actually used by the
-# app lives at app/sync/google_client_secret.json and IS tracked on purpose)
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+backend/.env
 /client_secret_*.json
 app/sync/google_client_secret.json
+
+# IDE & System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

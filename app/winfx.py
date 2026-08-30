@@ -22,6 +22,20 @@ _APPBAR_CALLBACK_MSG = 0x8000 + 1  # WM_APP + 1; arbitrary but must be >= WM_APP
 _mutex_handle = None
 
 
+def enable_dpi_awareness():
+    """Enable Per-Monitor DPI Awareness so Tkinter and Win32 AppBar APIs use identical 1:1 pixel coordinates."""
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor V2
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System DPI
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+
 class _APPBARDATA(ctypes.Structure):
     _fields_ = [
         ("cbSize", wintypes.DWORD),
@@ -76,26 +90,33 @@ def set_appbar_edge_pos(hwnd, side, width):
     (x, y, w, h) rect the shell actually granted (it may differ slightly,
     e.g. to avoid the taskbar), or None on failure."""
     try:
-        screen_w = ctypes.windll.user32.GetSystemMetrics(SM_CXSCREEN)
-        screen_h = ctypes.windll.user32.GetSystemMetrics(SM_CYSCREEN)
+        work = get_work_area()
+        if work:
+            work_l, work_t, work_r, work_b = work
+        else:
+            work_l, work_t = 0, 0
+            work_r = ctypes.windll.user32.GetSystemMetrics(SM_CXSCREEN)
+            work_b = ctypes.windll.user32.GetSystemMetrics(SM_CYSCREEN)
 
         abd = _APPBARDATA()
         abd.cbSize = ctypes.sizeof(_APPBARDATA)
         abd.hWnd = hwnd
         abd.uEdge = ABE_LEFT if side == "left" else ABE_RIGHT
-        abd.rc.top = 0
-        abd.rc.bottom = screen_h
+        abd.rc.top = work_t
+        abd.rc.bottom = work_b
+
         if side == "left":
-            abd.rc.left = 0
-            abd.rc.right = width
+            abd.rc.left = work_l
+            abd.rc.right = work_l + width
         else:
-            abd.rc.right = screen_w
-            abd.rc.left = screen_w - width
+            abd.rc.right = work_r
+            abd.rc.left = work_r - width
 
         ctypes.windll.shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
 
-        # ABM_QUERYPOS may shift the edge coordinate to dodge another appbar
-        # (usually the taskbar) — recompute the far edge from our fixed width.
+        # Re-apply exact width and taskbar top/bottom bounds
+        abd.rc.top = work_t
+        abd.rc.bottom = work_b
         if side == "left":
             abd.rc.right = abd.rc.left + width
         else:
@@ -103,7 +124,9 @@ def set_appbar_edge_pos(hwnd, side, width):
 
         ctypes.windll.shell32.SHAppBarMessage(ABM_SETPOS, ctypes.byref(abd))
 
-        return abd.rc.left, abd.rc.top, abd.rc.right - abd.rc.left, abd.rc.bottom - abd.rc.top
+        actual_w = abd.rc.right - abd.rc.left
+        actual_h = abd.rc.bottom - abd.rc.top
+        return abd.rc.left, abd.rc.top, actual_w, actual_h
     except Exception:
         return None
 
@@ -139,6 +162,9 @@ def round_window(widget, radius=14):
     try:
         widget.update_idletasks()
         hwnd = widget.winfo_id()
+        if radius <= 0:
+            ctypes.windll.user32.SetWindowRgn(hwnd, None, True)
+            return
         w = max(1, widget.winfo_width())
         h = max(1, widget.winfo_height())
         rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius)

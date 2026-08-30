@@ -1,101 +1,69 @@
-# KQ Note
+# Tài Liệu Hướng Dẫn Sử Dụng KQ Note
 
-Ứng dụng ghi chú desktop nhỏ gọn cho Windows, luôn sẵn sàng nổi trên màn hình để lưu và tra cứu nhanh các lệnh/cheatsheet thường dùng (nmap, docker, SQL,...) mà không cần mở trình soạn thảo hay trình duyệt.
+KQ Note là giải pháp ghi chú để bàn tốc độ cao dành cho hệ điều hành Windows. Ứng dụng được thiết kế tối ưu cho hoạt động đa nhiệm với khả năng tự động dính cạnh màn hình, ghim luôn nổi trên cùng, quản lý đa ghi chú với tính năng kéo thả sắp xếp, dán ảnh màn hình trực tiếp và đồng bộ điện toán đám mây.
 
-![platform](https://img.shields.io/badge/platform-Windows-blue) ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+## Các Tính Năng Chính
 
-## Tính năng
+### Quản Lý Đa Ghi Chú
+Cho phép lưu trữ và chuyển đổi giữa nhiều ghi chú khác nhau thông qua giao diện danh sách tập trung.
+Hỗ trợ kéo thả trực quan để sắp xếp lại thứ tự ưu tiên của từng ghi chú.
+Tích hợp công cụ tìm kiếm tức thì theo tiêu đề và nội dung xem trước.
 
-**Giao diện**
-- Widget nổi, luôn hiển thị trên cùng, có thể kéo thả vị trí và resize tuỳ ý
-- Nền trong suốt nhẹ, bo góc cửa sổ hiện đại, không viền thừa
-- Thu gọn xuống khay hệ thống (system tray), không chiếm taskbar
+### Tương Tác Cửa Sổ Desktop
+Tự động dính khít mép màn hình (Desktop Docking) không để lại khoảng hở, giúp các ứng dụng khác tự động điều chỉnh không gian hiển thị.
+Chế độ ghim luôn nổi trên cùng (Always-on-Top) giữ cho thông tin quan trọng không bị che khuất.
+Hỗ trợ khay hệ thống (System Tray) cho phép thao tác ẩn hiện nhanh mà không làm gián đoạn không gian làm việc.
 
-**Ghi chú & định dạng**
-- Một tài liệu duy nhất, cuộn liên tục — không cần quản lý danh sách note rời rạc
-- Định dạng nhanh bằng toolbar: Heading (H1), **Bold**, danh sách số thứ tự, bullet 2 cấp
-- Enter trong danh sách tự nối tiếp số/ký hiệu; Enter trên dòng rỗng sẽ thoát danh sách
-- Tự động lưu khi gõ, không cần bấm Save
+### Biên Tập Nội Dung Và Chụp Ảnh
+Thanh công cụ hỗ trợ định dạng tiêu đề, danh sách phân cấp và in đậm văn bản.
+Tích hợp công cụ chụp ảnh màn hình và hỗ trợ dán hình ảnh trực tiếp từ bộ nhớ tạm.
+Tự động phát hiện và tô sáng các liên kết web để truy cập nhanh bằng trình duyệt mặc định.
 
-**Tìm kiếm**
-- Tìm theo toàn bộ nội dung (không chỉ tiêu đề), tự nhảy và bôi vàng kết quả
-- `Enter` để nhảy tới kết quả tiếp theo
+### Đồng Bộ Đám Mây
+Tích hợp xác thực tài khoản Google để đồng bộ dữ liệu giữa các thiết bị.
+Cơ chế đồng bộ ngầm đảm bảo ứng dụng luôn hoạt động mượt mà ngay cả khi ngắt kết nối mạng.
 
-**Hình ảnh & liên kết**
-- Dán ảnh trực tiếp từ clipboard (`Ctrl+V`) vào note, ảnh được lưu file riêng để note luôn nhẹ
-- Note dài nhiều ảnh sẽ tải dần khi cuộn tới (lazy-load), không load hết một lúc
-- Click vào ảnh để xem phóng to; click vào URL trong nội dung để mở bằng trình duyệt
+## Hướng Dẫn Thao Tác Giao Diện
 
-**Hệ thống**
-- Phím tắt toàn cục để ẩn/hiện, hoạt động ở bất kỳ đâu kể cả khi app không focus
-- Chỉ chạy một tiến trình duy nhất (single-instance), tránh xung đột khi tự khởi động cùng Windows
+### Chuyển Đổi Danh Sách Ghi Chú
+Bấm vào biểu tượng ba gạch góc trên bên trái thanh tiêu đề để mở danh sách ghi chú. Nhấp chọn một ghi chú bất kỳ trong danh sách để mở màn hình chỉnh sửa.
 
-## Cài đặt
+### Tạo Mới Và Xóa Ghi Chú
+Bấm vào biểu tượng dấu cộng tại thanh tìm kiếm danh sách để tạo ghi chú mới.
+Bấm vào biểu tượng thùng rác trên thẻ ghi chú để thực hiện xóa sau khi xác nhận.
 
-Tải bản cài đặt mới nhất tại trang **[Releases](https://github.com/ckq7703/KQ-Note/releases)** → chạy `KQNoteSetup.exe`.
+### Sắp Xếp Thứ Tự Ghi Chú
+Nhấp và giữ biểu tượng tay kéo ở mép trái của thẻ ghi chú, sau đó di chuyển lên hoặc xuống đến vị trí mong muốn. Thứ tự mới sẽ được tự động lưu vào chỉ mục hệ thống.
 
-Installer sẽ tự động:
-- Cài ứng dụng vào `%LOCALAPPDATA%\Programs\KQ Note` (không cần quyền admin)
-- Tạo shortcut trong Start Menu
-- Đăng ký tự khởi động cùng Windows
-- Cài kèm uninstaller (gỡ trong Settings → Apps)
+### Menu Thao Tác Nhanh
+Bấm vào biểu tượng ba chấm góc trên bên phải thanh tiêu đề để truy cập các tính năng:
+Bật hoặc tắt chế độ ghim cửa sổ trên cùng.
+Kích hoạt công cụ chụp ảnh màn hình (chỉ khả dụng trong màn hình biên tập ghi chú).
+Quản lý đăng nhập tài khoản Google và kích hoạt đồng bộ thủ công.
 
-## Phím tắt
+## Bảng Phím Tắt
 
-| Phím tắt | Chức năng |
-|---|---|
-| `Ctrl+Alt+Space` | Ẩn / hiện cửa sổ |
-| `Ctrl+Space` | Ẩn / hiện cửa sổ (hiện lại sẽ luôn nổi trên cùng) |
-| `Ctrl+V` | Dán văn bản, hoặc dán ảnh nếu clipboard đang chứa ảnh |
-| `Enter` (trong danh sách) | Tạo dòng tiếp theo, tự nối số/bullet |
-| `Enter` (trong ô tìm kiếm) | Nhảy tới kết quả tìm kiếm tiếp theo |
-| `Esc` (trong ô tìm kiếm) | Xoá tìm kiếm |
+Phím tắt | Chức năng
+---|---
+Ctrl + Alt + Space | Ẩn hoặc hiện nhanh cửa sổ ứng dụng từ bất kỳ đâu
+Ctrl + Space | Ẩn hoặc hiện cửa sổ và ép buộc hiển thị nổi trên cùng
+Ctrl + V | Dán văn bản hoặc dán trực tiếp hình ảnh từ bộ nhớ tạm
+Ctrl + F | Mở thanh tìm kiếm văn bản trong ghi chú đang xem
+Enter | Di chuyển đến kết quả tìm kiếm tiếp theo khi đang tìm kiếm
+Esc | Xóa từ khóa tìm kiếm đang nhập
 
-## Định dạng nội dung
+## Bảng Công Cụ Định Dạng
 
-Chọn dòng cần định dạng rồi bấm nút tương ứng trên toolbar:
+Công cụ | Chức năng
+---|---
+H1 | Áp dụng định dạng tiêu đề lớn
+B | Bật hoặc tắt định dạng in đậm
+1. | Chèn danh sách tự động đánh số thứ tự (Cấp 1)
+- | Chèn danh sách gạch đầu dòng (Cấp 2)
++ | Chèn danh sách dấu cộng (Cấp 3)
 
-| Nút | Ý nghĩa |
-|---|---|
-| `H1` | Tiêu đề |
-| `B` | In đậm |
-| `1.` | Danh sách số thứ tự (cấp 1) |
-| `—` | Bullet cấp 2 |
-| `+` | Bullet cấp 3 |
+## Yêu Cầu Hệ Thống Và Lưu Trữ
 
-## Dữ liệu được lưu ở đâu
-
-Toàn bộ dữ liệu lưu cục bộ trên máy, không gửi lên máy chủ nào:
-
-```
-%APPDATA%\NoteCheatsheet\
-├── notes.txt      # nội dung ghi chú (plain text)
-├── config.json    # vị trí cửa sổ, phím tắt, tuỳ chọn
-└── images\        # ảnh đã dán vào note
-```
-
-## Chạy từ mã nguồn
-
-Yêu cầu Python 3.10+.
-
-```bash
-pip install -r requirements.txt
-python main.py
-```
-
-## Build installer
-
-```bash
-python -m PyInstaller --onedir --noconsole --name "KQNote" --icon="assets/logo-kqnote.ico" --add-data "assets;assets" main.py
-ISCC installer.iss
-```
-
-File cài đặt hoàn chỉnh sẽ nằm trong `installer_output/KQNoteSetup.exe`.
-
-## Công nghệ sử dụng
-
-- **Python + Tkinter** — giao diện, nhẹ và không cần cài runtime thêm
-- **Pillow** — xử lý ảnh, icon
-- **pystray** — icon khay hệ thống
-- **pynput** — phím tắt toàn cục
-- **Inno Setup** — đóng gói installer cho Windows
+Hệ điều hành: Windows 10 / Windows 11 (64-bit)
+Độ phân giải: Tự động điều chỉnh tỷ lệ hiển thị theo DPI màn hình (từ 100% đến 200%)
+Lưu trữ dữ liệu: Dữ liệu được lưu trữ cục bộ tại thư mục ứng dụng và đồng bộ ngầm qua giao thức HTTPS

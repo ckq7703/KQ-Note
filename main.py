@@ -4,10 +4,11 @@ import tkinter as tk
 from app.config import load_config
 from app.notes_widget import NotesWidget
 from app.tray_app import TrayApp
-from app.winfx import acquire_single_instance_lock
+from app.winfx import acquire_single_instance_lock, enable_dpi_awareness
 
 
 def main():
+    enable_dpi_awareness()
     if not acquire_single_instance_lock():
         return
 

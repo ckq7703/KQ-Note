@@ -1,8 +1,11 @@
+import datetime
 import io
 import os
 import queue
 import re
 import tkinter as tk
+from tkinter import ttk
+import tkinter.messagebox as messagebox
 import tkinter.simpledialog as simpledialog
 import uuid
 import webbrowser
@@ -237,6 +240,7 @@ class NotesWidget(tk.Toplevel):
         self._match_idx = -1
         self._photo_refs = {}
         self._pending_images = set()
+        self.active_note_id = store.get_active_note_id()
 
         cfg = load_config()
         self._always_on_top = cfg.get("always_on_top", True)
@@ -292,36 +296,71 @@ class NotesWidget(tk.Toplevel):
         header.bind("<B1-Motion>", self._drag_move)
         header.bind("<ButtonRelease-1>", self._drag_end)
 
-        title_lbl = tk.Label(header, text="KQ Note", bg=BG_HEADER, fg=FG_TEXT,
-                              font=("Segoe UI", 10, "bold"), padx=12, pady=9)
-        title_lbl.pack(side="left")
-        title_lbl.bind("<ButtonPress-1>", self._drag_start)
-        title_lbl.bind("<B1-Motion>", self._drag_move)
-        title_lbl.bind("<ButtonRelease-1>", self._drag_end)
+        self.list_nav_btn = tk.Label(header, text="☰", bg=BG_HEADER, fg=FG_TEXT,
+                                     font=("Segoe UI", 11, "bold"), padx=10, pady=9, cursor="hand2")
+        self.list_nav_btn.pack(side="left")
+        self.list_nav_btn.bind("<Button-1>", lambda e: self._toggle_view_mode())
 
-        self.pin_btn = tk.Label(header, text="\U0001F4CC", bg=BG_HEADER,
-                                 fg=(FG_ACCENT if self._always_on_top else FG_MUTED),
-                                 font=("Segoe UI", 9), padx=10, cursor="hand2")
-        self.pin_btn.pack(side="right")
-        self.pin_btn.bind("<Button-1>", lambda e: self.toggle_always_on_top())
+        # Header menu dropdown button (...)
+        self.menu_more_btn = tk.Label(
+            header, text="⋯", bg=BG_HEADER, fg=FG_TEXT,
+            font=("Segoe UI", 13, "bold"), padx=12, pady=6, cursor="hand2"
+        )
+        self.menu_more_btn.pack(side="right")
+        self.menu_more_btn.bind("<Button-1>", self._show_header_dropdown_menu)
+        self.menu_more_btn.bind("<Enter>", lambda e: self.menu_more_btn.config(bg=BG_MENU))
+        self.menu_more_btn.bind("<Leave>", lambda e: self.menu_more_btn.config(bg=BG_HEADER))
 
-        self._cloud_icon_photo = self._load_square_photo(GOOGLE_ICON_PATH, CLOUD_ICON_SIZE)
-        self._avatar_photo = None
-        self.cloud_btn = tk.Label(header, bg=BG_HEADER, fg=FG_MUTED,
-                                   font=("Segoe UI", 10), padx=10, cursor="hand2")
-        self.cloud_btn.pack(side="right")
-        self.cloud_btn.bind("<Button-1>", self._on_cloud_click)
+        # Main view containers
+        self._setup_custom_scrollbar_style()
+        self.detail_view_frame = tk.Frame(outer, bg=BG)
+        self.list_view_frame = tk.Frame(outer, bg=BG)
 
-        self._screenshot_icon_photo = self._load_square_photo(SCREENSHOT_ICON_PATH, SCREENSHOT_ICON_SIZE)
-        self.screenshot_btn = tk.Label(header, bg=BG_HEADER, padx=10, cursor="hand2")
-        if self._screenshot_icon_photo is not None:
-            self.screenshot_btn.config(image=self._screenshot_icon_photo)
-        else:
-            self.screenshot_btn.config(text="📷", fg=FG_MUTED, font=("Segoe UI", 10))
-        self.screenshot_btn.pack(side="right")
-        self.screenshot_btn.bind("<Button-1>", lambda e: self._start_screenshot())
+        # Build Detail View (Text Editor)
+        self._build_detail_view(self.detail_view_frame)
 
-        search_row = tk.Frame(outer, bg=BG, padx=10, pady=8)
+        # Build List View (Note List Interface)
+        self._build_list_view(self.list_view_frame)
+
+        # Show detail view by default
+        self.detail_view_frame.pack(fill="both", expand=True)
+
+        grip = tk.Label(outer, text="⋰", bg=BG, fg=FG_MUTED, cursor="size_nw_se",
+                         font=("Segoe UI", 10))
+        grip.place(relx=1.0, rely=1.0, anchor="se")
+        grip.bind("<ButtonPress-1>", self._resize_start)
+        grip.bind("<B1-Motion>", self._resize_move)
+        grip.bind("<ButtonRelease-1>", self._resize_end)
+
+    def _setup_custom_scrollbar_style(self):
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure(
+            "Dark.Vertical.TScrollbar",
+            grabbackground="#444448",
+            troughcolor=BG,
+            background="#2d2d30",
+            bordercolor=BG,
+            arrowcolor=BG,
+            lightcolor=BG,
+            darkcolor=BG,
+            borderwidth=0,
+            arrowsize=0,
+            relief="flat",
+            width=8
+        )
+        style.map(
+            "Dark.Vertical.TScrollbar",
+            background=[("active", "#606066"), ("pressed", "#007acc")],
+            grabbackground=[("active", "#606066"), ("pressed", "#007acc")]
+        )
+
+    def _build_detail_view(self, parent):
+        search_row = tk.Frame(parent, bg=BG, padx=10, pady=8)
         search_row.pack(fill="x")
 
         search_wrap = tk.Frame(search_row, bg=BG)
@@ -346,7 +385,7 @@ class NotesWidget(tk.Toplevel):
         search_underline = tk.Frame(search_wrap, bg=BORDER, height=1)
         search_underline.pack(fill="x", pady=(2, 0))
 
-        toolbar = tk.Frame(outer, bg=BG)
+        toolbar = tk.Frame(parent, bg=BG)
         toolbar.pack(fill="x", padx=10, pady=(6, 4))
 
         def _tb_btn(text, command, italic=False):
@@ -369,7 +408,7 @@ class NotesWidget(tk.Toplevel):
         _tb_btn("{ }", self._toggle_codeblock)
         _tb_btn("🔗", self._insert_link)
 
-        body = tk.Frame(outer, bg=BG)
+        body = tk.Frame(parent, bg=BG)
         body.pack(fill="both", expand=True, padx=(10, 10), pady=(0, 8))
 
         self.text = tk.Text(
@@ -377,13 +416,12 @@ class NotesWidget(tk.Toplevel):
             relief="flat", wrap="word", font=("Segoe UI", 10), padx=4, pady=4,
             undo=True, borderwidth=0, highlightthickness=0,
             selectbackground=SELECT_BG, selectforeground=FG_TEXT,
-            # Without this, Tk hides the selection highlight entirely as soon
-            # as the widget loses keyboard focus — which happens the instant
-            # the right-click context menu takes focus, making a selection
-            # you just made look like it vanished.
             inactiveselectbackground=SELECT_BG,
         )
+        text_scrollbar = ttk.Scrollbar(body, orient="vertical", style="Dark.Vertical.TScrollbar", command=self.text.yview)
+        self.text.configure(yscrollcommand=text_scrollbar.set)
         self.text.pack(side="left", fill="both", expand=True)
+        text_scrollbar.pack(side="right", fill="y")
 
         self.text.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground=FG_TITLE_TAG)
         self.text.tag_configure("h2", font=("Segoe UI", 13, "bold"), foreground=FG_TITLE_TAG)
@@ -416,11 +454,6 @@ class NotesWidget(tk.Toplevel):
         self.text.tag_configure("match_current", background=MATCH_CURRENT_BG)
         self.text.tag_configure("url", foreground=FG_ACCENT, underline=True)
         self.text.tag_raise("url")
-        # Tk's built-in "sel" tag already exists before any of the tags above
-        # are configured, so by default it sits at the BOTTOM of the priority
-        # stack — codeblock/table/etc.'s own background then paints over the
-        # selection highlight instead of the other way around. Raise it last
-        # so a selection is always visible no matter what it overlaps.
         self.text.tag_raise("sel")
         self.text.tag_bind("url", "<Button-1>", self._on_url_click)
         self.text.tag_bind("url", "<Enter>", lambda e: self.text.config(cursor="hand2"))
@@ -435,12 +468,263 @@ class NotesWidget(tk.Toplevel):
         self.text.bind("<Button-3>", self._show_text_menu)
         self.search_entry.bind("<Button-3>", self._show_entry_menu)
 
-        grip = tk.Label(outer, text="⋰", bg=BG, fg=FG_MUTED, cursor="size_nw_se",
-                         font=("Segoe UI", 10))
-        grip.place(relx=1.0, rely=1.0, anchor="se")
-        grip.bind("<ButtonPress-1>", self._resize_start)
-        grip.bind("<B1-Motion>", self._resize_move)
-        grip.bind("<ButtonRelease-1>", self._resize_end)
+    def _build_list_view(self, parent):
+        top_bar = tk.Frame(parent, bg=BG, padx=10, pady=8)
+        top_bar.pack(fill="x")
+
+        search_wrap = tk.Frame(top_bar, bg=BG)
+        search_wrap.pack(side="left", fill="x", expand=True)
+
+        search_box = tk.Frame(search_wrap, bg=BG)
+        search_box.pack(fill="x")
+
+        tk.Label(search_box, text="\U0001F50D", bg=BG, fg=FG_MUTED,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(2, 6))
+        self.notes_search_var = tk.StringVar()
+        self.notes_search_entry = tk.Entry(
+            search_box, textvariable=self.notes_search_var, bg=BG, fg=FG_TEXT,
+            insertbackground=FG_TEXT, relief="flat", font=("Segoe UI", 10),
+            highlightthickness=0, selectbackground=SELECT_BG, selectforeground=FG_TEXT,
+        )
+        self.notes_search_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        self.notes_search_entry.bind("<KeyRelease>", lambda e: self._render_notes_list())
+
+        search_underline = tk.Frame(search_wrap, bg=BORDER, height=1)
+        search_underline.pack(fill="x", pady=(2, 0))
+
+        add_btn = tk.Label(
+            top_bar, text=" + ", bg=FG_ACCENT, fg="#ffffff",
+            font=("Segoe UI", 11, "bold"), padx=8, pady=2, cursor="hand2"
+        )
+        add_btn.pack(side="right", padx=(8, 0))
+        add_btn.bind("<Button-1>", lambda e: self.create_new_note())
+        add_btn.bind("<Enter>", lambda e: add_btn.config(bg="#1c92d2"))
+        add_btn.bind("<Leave>", lambda e: add_btn.config(bg=FG_ACCENT))
+
+        # Scrollable note list
+        container = tk.Frame(parent, bg=BG)
+        container.pack(fill="both", expand=True, padx=10, pady=(4, 8))
+
+        self.notes_canvas = tk.Canvas(container, bg=BG, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", style="Dark.Vertical.TScrollbar", command=self.notes_canvas.yview)
+        self.notes_scroll_frame = tk.Frame(self.notes_canvas, bg=BG)
+
+        self.notes_scroll_frame.bind(
+            "<Configure>",
+            lambda e: self.notes_canvas.configure(scrollregion=self.notes_canvas.bbox("all"))
+        )
+
+        canvas_win = self.notes_canvas.create_window((0, 0), window=self.notes_scroll_frame, anchor="nw")
+        self.notes_canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_canvas_resize(event):
+            self.notes_canvas.itemconfig(canvas_win, width=event.width)
+
+        self.notes_canvas.bind("<Configure>", _on_canvas_resize)
+
+        self.notes_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mw(e):
+            self.notes_canvas.yview_scroll(-1 * int(e.delta / 120), "units")
+
+        self.notes_canvas.bind("<MouseWheel>", _on_mw)
+        self.notes_scroll_frame.bind("<MouseWheel>", _on_mw)
+
+    # ---------- Navigation & Note Management ----------
+    def _toggle_view_mode(self):
+        if self.detail_view_frame.winfo_viewable():
+            self.show_list_view()
+
+    def show_list_view(self):
+        self.flush_save()
+        self.detail_view_frame.pack_forget()
+        self.list_view_frame.pack(fill="both", expand=True)
+        self.list_nav_btn.config(text="", cursor="arrow")
+        self._render_notes_list()
+
+    def show_detail_view(self, note_id=None):
+        if note_id and note_id != self.active_note_id:
+            self.flush_save()
+            self.active_note_id = note_id
+            store.set_active_note_id(note_id)
+            content = store.load_note_by_id(note_id)
+            self._load_content_into_editor(content)
+
+        self.list_view_frame.pack_forget()
+        self.detail_view_frame.pack(fill="both", expand=True)
+        self.list_nav_btn.config(text="☰", fg=FG_TEXT)
+
+    def switch_to_note(self, note_id):
+        self.show_detail_view(note_id)
+
+    def create_new_note(self):
+        self.flush_save()
+        new_id = store.create_note("# Ghi chú mới\n\nNội dung ghi chú...")
+        self.active_note_id = new_id
+        store.set_active_note_id(new_id)
+        content = store.load_note_by_id(new_id)
+        self._load_content_into_editor(content)
+        self.show_detail_view()
+        self.text.focus_force()
+
+    def _confirm_delete_note(self, note_id, title):
+        if messagebox.askyesno("Xác nhận xoá", f"Bạn có chắc chắn muốn xoá ghi chú:\n\"{title}\"?", parent=self):
+            next_id = store.delete_note_by_id(note_id)
+            if self.active_note_id == note_id:
+                self.active_note_id = next_id
+                store.set_active_note_id(next_id)
+                content = store.load_note_by_id(next_id)
+                self._load_content_into_editor(content)
+            self._render_notes_list()
+
+    def _bind_card_drag(self, widget, card_info):
+        if not widget:
+            return
+
+        def _on_drag_start(event):
+            self._drag_data = {
+                "card_info": card_info,
+                "start_y": event.y_root,
+                "moved": False,
+            }
+            card_info["card"].config(highlightbackground=FG_ACCENT, highlightthickness=2)
+
+        def _on_drag_motion(event):
+            if not hasattr(self, "_drag_data") or not self._drag_data:
+                return
+            if abs(event.y_root - self._drag_data["start_y"]) > 6:
+                self._drag_data["moved"] = True
+
+            if not self._drag_data["moved"]:
+                return
+
+            pointer_y = self.notes_scroll_frame.winfo_pointery() - self.notes_scroll_frame.winfo_rooty()
+
+            target_idx = None
+            for idx, item in enumerate(self._rendered_cards):
+                c_widget = item["card"]
+                c_top = c_widget.winfo_y()
+                c_height = c_widget.winfo_height()
+                if c_top <= pointer_y <= c_top + c_height:
+                    target_idx = idx
+                    break
+
+            if target_idx is not None and card_info in self._rendered_cards:
+                curr_idx = self._rendered_cards.index(card_info)
+                if target_idx != curr_idx:
+                    item = self._rendered_cards.pop(curr_idx)
+                    self._rendered_cards.insert(target_idx, item)
+
+                    for card_item in self._rendered_cards:
+                        card_item["card"].pack_forget()
+                        card_item["card"].pack(fill="x", pady=4, padx=2)
+
+        def _on_drag_end(event):
+            if hasattr(self, "_drag_data") and self._drag_data:
+                is_active = (card_info["id"] == self.active_note_id)
+                card_info["card"].config(
+                    highlightbackground=FG_ACCENT if is_active else BORDER,
+                    highlightthickness=1
+                )
+                if self._drag_data.get("moved"):
+                    ordered_ids = [item["id"] for item in self._rendered_cards]
+                    store.reorder_notes(ordered_ids)
+                self._drag_data = None
+
+        widget.bind("<ButtonPress-1>", _on_drag_start, add="+")
+        widget.bind("<B1-Motion>", _on_drag_motion, add="+")
+        widget.bind("<ButtonRelease-1>", _on_drag_end, add="+")
+
+    def _render_notes_list(self):
+        for widget in self.notes_scroll_frame.winfo_children():
+            widget.destroy()
+
+        notes = store.list_notes()
+        query = self.notes_search_var.get().strip().lower() if hasattr(self, 'notes_search_var') else ""
+
+        filtered = []
+        for n in notes:
+            if not query or query in n.get("title", "").lower() or query in n.get("snippet", "").lower():
+                filtered.append(n)
+
+        if not filtered:
+            lbl = tk.Label(
+                self.notes_scroll_frame,
+                text="Không tìm thấy ghi chú nào" if query else "Chưa có ghi chú nào.\nBấm + ở trên để tạo mới.",
+                bg=BG, fg=FG_MUTED, font=("Segoe UI", 10), pady=30
+            )
+            lbl.pack(fill="x")
+            return
+
+        self._rendered_cards = []
+
+        for n in filtered:
+            nid = n["id"]
+            is_active = (nid == self.active_note_id)
+
+            card = tk.Frame(
+                self.notes_scroll_frame,
+                bg=BG_HEADER if is_active else BG_MENU,
+                padx=8, pady=8, cursor="hand2",
+                highlightbackground=FG_ACCENT if is_active else BORDER,
+                highlightthickness=1
+            )
+            card.pack(fill="x", pady=4, padx=2)
+
+            top_row = tk.Frame(card, bg=card.cget("bg"))
+            top_row.pack(fill="x")
+
+            drag_grip = tk.Label(
+                top_row, text="⋮⋮", bg=card.cget("bg"), fg=FG_MUTED,
+                font=("Segoe UI", 10), padx=4, cursor="fleur"
+            )
+            drag_grip.pack(side="left")
+
+            title_text = n.get("title") or "Ghi chú không tiêu đề"
+            lbl_title = tk.Label(
+                top_row, text=title_text, bg=card.cget("bg"),
+                fg=FG_TITLE_TAG if is_active else FG_TEXT,
+                font=("Segoe UI", 10, "bold"), anchor="w"
+            )
+            lbl_title.pack(side="left", fill="x", expand=True, padx=(2, 0))
+
+            del_btn = tk.Label(
+                top_row, text="🗑", bg=card.cget("bg"), fg=FG_MUTED,
+                font=("Segoe UI", 9), padx=4, cursor="hand2"
+            )
+            del_btn.pack(side="right")
+            del_btn.bind("<Button-1>", lambda e, note_id=nid, t=title_text: self._confirm_delete_note(note_id, t))
+
+            snippet_text = n.get("snippet", "")
+            lbl_snip = None
+            if snippet_text:
+                lbl_snip = tk.Label(
+                    card, text=snippet_text, bg=card.cget("bg"), fg=FG_MUTED,
+                    font=("Segoe UI", 9), anchor="w", justify="left", wraplength=280
+                )
+                lbl_snip.pack(fill="x", pady=(2, 4), padx=(20, 0))
+
+            updated_ts = n.get("updated_at", 0)
+            dt_str = datetime.datetime.fromtimestamp(updated_ts).strftime("%d/%m/%Y %H:%M") if updated_ts else ""
+            lbl_date = tk.Label(
+                card, text=dt_str, bg=card.cget("bg"), fg=FG_MUTED,
+                font=("Segoe UI", 8), anchor="w"
+            )
+            lbl_date.pack(fill="x", padx=(20, 0))
+
+            card_info = {"id": nid, "card": card, "note": n}
+            self._rendered_cards.append(card_info)
+
+            def _bind_click(w, target_id=nid):
+                if w:
+                    w.bind("<Button-1>", lambda e: self.switch_to_note(target_id))
+
+            for w in (top_row, lbl_title, lbl_snip, lbl_date):
+                _bind_click(w)
+
+            self._bind_card_drag(drag_grip, card_info)
+            self._bind_card_drag(card, card_info)
 
     # ---------- drag / resize (overrideredirect window) ----------
     def _drag_start(self, event):
@@ -569,7 +853,8 @@ class NotesWidget(tk.Toplevel):
         save_config(cfg)
 
     def _on_window_configure(self, _event=None):
-        round_window(self, WINDOW_RADIUS)
+        radius = 0 if self._docked_side is not None else WINDOW_RADIUS
+        round_window(self, radius)
 
     # ---------- editing / autosave ----------
     def _on_text_changed(self, _event=None):
@@ -643,18 +928,31 @@ class NotesWidget(tk.Toplevel):
         except Exception:
             return None
 
-    def _update_cloud_icon(self):
+    def _show_header_dropdown_menu(self, event=None):
+        items = [
+            ("📌  Bỏ ghim cửa sổ" if self._always_on_top else "📌  Ghim trên cùng", self.toggle_always_on_top),
+        ]
+
+        if hasattr(self, 'detail_view_frame') and self.detail_view_frame.winfo_viewable():
+            items.append(("📷  Chụp màn hình", self._start_screenshot))
+
+        items.append(None)  # Separator
+
         if self.sync_engine.is_logged_in():
-            avatar_bytes = store.load_avatar_bytes()
-            photo = self._make_avatar_photo(avatar_bytes, AVATAR_SIZE) if avatar_bytes else None
-            if photo is not None:
-                self._avatar_photo = photo  # keep a reference so Tk doesn't garbage-collect it
-                self.cloud_btn.config(image=photo, text="")
-                return
-        if self._cloud_icon_photo is not None:
-            self.cloud_btn.config(image=self._cloud_icon_photo, text="")
+            email = self.sync_engine.account_email() or "Tài khoản"
+            items.append((f"👤  {email}", None))
+            items.append(("🔄  Đồng bộ ngầm ngay", self._sync_now))
+            items.append(("🚪  Đăng xuất khỏi Cloud", self._logout))
         else:
-            self.cloud_btn.config(image="", text="☁", fg=FG_MUTED)
+            items.append(("☁️  Đăng nhập Cloud (Google)", self.sync_engine.login_with_google_async))
+
+        menu = ContextMenu(self, items)
+        x = self.menu_more_btn.winfo_rootx()
+        y = self.menu_more_btn.winfo_rooty() + self.menu_more_btn.winfo_height() + 2
+        menu.popup(x, y)
+
+    def _update_cloud_icon(self):
+        pass
 
     def _on_cloud_click(self, event):
         if not self.sync_engine.is_logged_in():
@@ -702,6 +1000,7 @@ class NotesWidget(tk.Toplevel):
         if content_hash(local_content) != st.get("last_synced_hash"):
             return  # local has unsynced edits; let the next push reconcile instead of clobbering
         self._load_content_into_editor(result["content"])
+        store.save_content(result["content"])
         store.save_cloud_cache(result["content"])
         sync_state.update_after_sync(result["version"], content_hash(result["content"]))
         self._update_cloud_icon()
@@ -711,6 +1010,7 @@ class NotesWidget(tk.Toplevel):
         # empty for a brand-new account — it's a separate "document" from the
         # local-only note, never auto-merged or auto-pushed into.
         self._load_content_into_editor(result["content"])
+        store.save_content(result["content"])
         store.save_cloud_cache(result["content"])
         sync_state.update_after_sync(result["version"], content_hash(result["content"]))
         self._update_cloud_icon()
@@ -1418,13 +1718,15 @@ class NotesWidget(tk.Toplevel):
         self.lift()
         self._always_on_top = True
         self.attributes("-topmost", True)
-        self.pin_btn.config(fg=FG_ACCENT)
+        if hasattr(self, 'pin_btn'):
+            self.pin_btn.config(fg=FG_ACCENT)
         self.search_entry.focus_force()
 
     def toggle_always_on_top(self):
         self._always_on_top = not self._always_on_top
         self.attributes("-topmost", self._always_on_top)
-        self.pin_btn.config(fg=FG_ACCENT if self._always_on_top else FG_MUTED)
+        if hasattr(self, 'pin_btn'):
+            self.pin_btn.config(fg=FG_ACCENT if self._always_on_top else FG_MUTED)
         cfg = load_config()
         cfg["always_on_top"] = self._always_on_top
         save_config(cfg)
