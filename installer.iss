@@ -1,5 +1,5 @@
 #define MyAppName "KQ Note"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.4.2"
 #define MyAppExeName "KQNote.exe"
 
 [Setup]
@@ -19,6 +19,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+CloseApplications=yes
+CloseApplicationsFilter=*.exe
+AppMutex=KQNoteAppMutex
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppName}
 VersionInfoDescription={#MyAppName} Setup
