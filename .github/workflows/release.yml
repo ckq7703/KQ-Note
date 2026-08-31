@@ -26,12 +26,26 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller pillow pywin32 requests google-auth google-auth-oauthlib pynput
+          pip install nuitka zstandard pillow pywin32 requests google-auth google-auth-oauthlib pynput
           if (Test-Path "requirements.txt") { pip install -r requirements.txt }
 
-      - name: Build executable with PyInstaller
+      - name: Pre-process XOR Obfuscation
         run: |
-          pyinstaller KQNote.spec --noconfirm
+          python xor_obfuscate.py
+
+      - name: Build executable with Nuitka
+        run: |
+          python -m nuitka `
+            --standalone `
+            --enable-plugin=tk-inter `
+            --windows-console-mode=disable `
+            --windows-icon-from-ico=assets/logo-kqnote.ico `
+            --include-data-dir=assets=assets `
+            --version-file=version_info.txt `
+            --output-dir=dist `
+            --output-filename=KQNote.exe `
+            main.py
+          if (Test-Path "dist\main.dist") { Rename-Item -Path "dist\main.dist" -NewName "KQNote" -Force }
 
       - name: Compile Inno Setup Installer
         run: |
