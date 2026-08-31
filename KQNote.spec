@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+import os
+
+datas = [('assets', 'assets')]
+if os.path.exists('app/sync/google_client_secret.json'):
+    datas.append(('app/sync/google_client_secret.json', 'app/sync'))
+elif os.path.exists('app/sync/google_client_secret.json.example'):
+    datas.append(('app/sync/google_client_secret.json.example', 'app/sync'))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('app/sync/google_client_secret.json', 'app/sync')],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
