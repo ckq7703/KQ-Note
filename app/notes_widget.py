@@ -1088,11 +1088,33 @@ class NotesWidget(tk.Toplevel):
         self.notes_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        def _on_mw(e):
-            self.notes_canvas.yview_scroll(-1 * int(e.delta / 120), "units")
+        def _on_notes_mw(e):
+            if hasattr(e, "delta") and e.delta:
+                lines = -1 * int(e.delta / 40)
+                if lines == 0:
+                    lines = -1 if e.delta > 0 else 1
+                self.notes_canvas.yview_scroll(lines, "units")
+            elif getattr(e, "num", None) == 4:
+                self.notes_canvas.yview_scroll(-3, "units")
+            elif getattr(e, "num", None) == 5:
+                self.notes_canvas.yview_scroll(3, "units")
 
-        self.notes_canvas.bind("<MouseWheel>", _on_mw)
-        self.notes_scroll_frame.bind("<MouseWheel>", _on_mw)
+        self._on_notes_mw_func = _on_notes_mw
+
+        def _bind_mw_recursive(widget):
+            if not widget:
+                return
+            widget.bind("<MouseWheel>", _on_notes_mw, add="+")
+            widget.bind("<Button-4>", _on_notes_mw, add="+")
+            widget.bind("<Button-5>", _on_notes_mw, add="+")
+            for child in widget.winfo_children():
+                _bind_mw_recursive(child)
+
+        self._bind_notes_mw_recursive = _bind_mw_recursive
+
+        _bind_mw_recursive(container)
+        _bind_mw_recursive(self.notes_canvas)
+        _bind_mw_recursive(self.notes_scroll_frame)
 
     # ---------- Navigation & Note Management ----------
     def _toggle_view_mode(self):
@@ -1289,6 +1311,9 @@ class NotesWidget(tk.Toplevel):
 
             self._bind_card_drag(drag_grip, card_info)
             self._bind_card_drag(card, card_info)
+
+            if hasattr(self, "_bind_notes_mw_recursive"):
+                self._bind_notes_mw_recursive(card)
 
     # ---------- drag / resize (overrideredirect window) ----------
     def _drag_start(self, event):
