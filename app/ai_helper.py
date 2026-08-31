@@ -73,7 +73,7 @@ def get_available_models(api_key=None):
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "KQNote/1.3.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": "KQNote/1.3"})
         with urllib.request.urlopen(req, timeout=10) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             models = res_data.get("models", [])

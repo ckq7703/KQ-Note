@@ -1,0 +1,83 @@
+name: Build and Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow pywin32 requests google-auth google-auth-oauthlib pynput
+          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller KQNote.spec --noconfirm
+
+      - name: Compile Inno Setup Installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Create Portable Zip
+        run: |
+          Compress-Archive -Path "dist\KQNote\*" -DestinationPath "installer_output\KQNote-Portable.zip" -Force
+
+      - name: Extract Tag or Version Name
+        id: version
+        shell: powershell
+        run: |
+          $ver = "${{ github.ref_name }}"
+          if ($ver -notlike "v*") { $ver = "v1.4.0" }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG=$ver"
+
+      - name: Rename Artifacts with Version
+        shell: powershell
+        run: |
+          $ver = "${{ steps.version.outputs.TAG }}"
+          Move-Item -Path "installer_output\KQNoteSetup.exe" -Destination "installer_output\KQNoteSetup-$ver.exe" -Force
+          Move-Item -Path "installer_output\KQNote-Portable.zip" -Destination "installer_output\KQNote-$ver-Portable.zip" -Force
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.version.outputs.TAG }}
+          tag_name: ${{ steps.version.outputs.TAG }}
+          draft: false
+          prerelease: false
+          files: |
+            installer_output/KQNoteSetup-*.exe
+            installer_output/KQNote-*-Portable.zip
+          body: |
+            ## 🚀 KQ Note ${{ steps.version.outputs.TAG }}
+
+            ### ✨ Tính năng mới & Cải tiến:
+            - **Giao diện Trợ lý AI Responsive:** Đưa thanh Nút Thao Tác kết quả AI (`Xem Raw`, `Pop-up`, `Chèn`, `Thay thế`, `Sao chép`) lên vị trí ưu tiên phía trên khung hiển thị kết quả, khắc phục hoàn toàn sự cố nút bấm bị ẩn/tràn màn hình khi thu nhỏ chiều cao cửa sổ.
+            - **Bố cục Responsive 3 nấc:** Tự động điều chỉnh linh hoạt giao diện AI và thanh công cụ tùy theo độ rộng cửa sổ (Siêu nhỏ <320px, Chuẩn 320-460px, Rộng >460px).
+            - **Tính năng Đăng nhập & Đồng bộ Đám mây ổn định:** Kết nối backend cơ sở dữ liệu cloud, đảm bảo dữ liệu ghi chú đồng bộ liên tục.
+            - **Bộ cài đặt Inno Setup đầy đủ:** Hỗ trợ cài đặt tự động, tạo phím tắt Desktop, khởi chạy cùng Windows và gỡ cài đặt sạch sẽ trong Control Panel.
+
+            ---
+            ### 📦 Hướng dẫn cài đặt:
+            - **File Cài đặt (`KQNoteSetup-*.exe`):** Tải về và chạy file installer để tự động cài đặt ứng dụng vào hệ thống.
+            - **File Portable (`KQNote-*-Portable.zip`):** Giải nén và chạy trực tiếp `KQNote.exe` không cần cài đặt.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -335,6 +335,7 @@ class NotesWidget(tk.Toplevel):
         self.attributes("-topmost", self._always_on_top)
         self.attributes("-alpha", 0.92)
         self.configure(bg=BG)
+        self.wm_minsize(280, 320)
 
         self.geometry(cfg.get("widget_geometry", "380x520+880+70"))
         self._pre_dock_geometry = cfg.get("pre_dock_geometry")
@@ -600,7 +601,7 @@ class NotesWidget(tk.Toplevel):
             parent, bg=BG_HEADER, highlightbackground=BORDER, highlightthickness=1, padx=8, pady=4
         )
 
-        # Top Resizer Bar (Draggable to resize response box height upward/downward)
+        # Top Resizer Bar (Draggable to resize response box height)
         resizer = tk.Frame(self.ai_footer_frame, bg=BORDER, height=6, cursor="size_ns")
         resizer.pack(fill="x", side="top", pady=(0, 2))
 
@@ -610,19 +611,19 @@ class NotesWidget(tk.Toplevel):
                 self._ai_init_h = int(self.ai_res_text.cget("height"))
             except Exception:
                 self._ai_init_h = 4
-            self.ai_response_box.pack(fill="x", pady=4)
+            self.ai_response_box.pack(fill="x", pady=(2, 4))
 
         def _on_resizer_motion(e):
             if hasattr(self, "_ai_drag_start_y") and hasattr(self, "_ai_init_h"):
                 dy = self._ai_drag_start_y - e.y_root
                 line_delta = int(dy // 14)
-                new_h = max(2, min(35, self._ai_init_h + line_delta))
+                new_h = max(2, min(25, self._ai_init_h + line_delta))
                 self.ai_res_text.configure(height=new_h)
 
         resizer.bind("<ButtonPress-1>", _on_resizer_press)
         resizer.bind("<B1-Motion>", _on_resizer_motion)
 
-        # Header row inside AI footer
+        # 1. Header row inside AI footer
         hdr_row = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
         hdr_row.pack(fill="x", pady=(0, 4))
 
@@ -682,11 +683,74 @@ class NotesWidget(tk.Toplevel):
         compact_hdr_btn.bind("<Enter>", lambda e: compact_hdr_btn.config(bg=BG_MENU, fg=FG_TEXT))
         compact_hdr_btn.bind("<Leave>", lambda e: compact_hdr_btn.config(bg=BG_HEADER, fg=FG_ACCENT))
 
-        # Response display box (hidden until AI responds or loading)
+        # 2. Input Row (Entry + Send Button)
+        input_row = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
+        input_row.pack(fill="x", pady=(2, 4))
+
+        self.ai_entry = tk.Entry(
+            input_row, bg=BG, fg=FG_TEXT, insertbackground=FG_TEXT,
+            relief="flat", font=("Segoe UI", 9), highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=FG_ACCENT
+        )
+        self.ai_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
+        self.ai_entry.bind("<Return>", lambda e: self._send_ai_prompt())
+
+        self.ai_send_btn = tk.Label(
+            input_row, text="Gửi ➔", bg=FG_ACCENT, fg="#ffffff",
+            font=("Segoe UI", 9, "bold"), cursor="hand2", padx=10, pady=3
+        )
+        self.ai_send_btn.pack(side="right")
+        self.ai_send_btn.bind("<Button-1>", lambda e: self._send_ai_prompt())
+
+        # 3. Actions Row (PLACED ABOVE Response Box!)
+        self.ai_actions_frame = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
+
+        # Wide view frame (horizontal action buttons)
+        self.ai_actions_wide_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
+        self.ai_actions_wide_frame.pack(side="left")
+
+        def _act_btn(parent_frame, text, command):
+            btn = tk.Label(
+                parent_frame, text=text, bg=BG_MENU, fg=FG_TEXT,
+                font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
+            )
+            btn.pack(side="left", padx=2)
+            btn.bind("<Button-1>", lambda e: command())
+            btn.bind("<Enter>", lambda e: btn.config(bg=FG_ACCENT, fg="#ffffff"))
+            btn.bind("<Leave>", lambda e: btn.config(bg=BG_MENU, fg=FG_TEXT))
+            return btn
+
+        self.ai_toggle_view_btn = tk.Label(
+            self.ai_actions_wide_frame, text="📝 Xem Raw", bg=BG_MENU, fg=FG_TEXT,
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
+        )
+        self.ai_toggle_view_btn.pack(side="left", padx=2)
+        self.ai_toggle_view_btn.bind("<Button-1>", lambda e: self._toggle_ai_view_mode())
+        self.ai_toggle_view_btn.bind("<Enter>", lambda e: self.ai_toggle_view_btn.config(bg=FG_ACCENT, fg="#ffffff"))
+        self.ai_toggle_view_btn.bind("<Leave>", lambda e: self._update_toggle_btn_style())
+
+        self.ai_popup_btn = _act_btn(self.ai_actions_wide_frame, "👁️ Pop-up", self._ai_open_preview)
+        self.ai_insert_btn = _act_btn(self.ai_actions_wide_frame, "📥 Chèn", self._ai_insert_at_cursor)
+        self.ai_replace_btn = _act_btn(self.ai_actions_wide_frame, "🔄 Thay thế", self._ai_replace_content)
+        self.ai_copy_btn = _act_btn(self.ai_actions_wide_frame, "📋 Sao chép", self._ai_copy_response)
+
+        # Compact view frame (collapsed dropdown button for narrow screens)
+        self.ai_actions_compact_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
+
+        compact_dropdown_btn = tk.Label(
+            self.ai_actions_compact_frame, text="⚡ Thao tác kết quả ▾", bg=FG_ACCENT, fg="#ffffff",
+            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=8, pady=2
+        )
+        compact_dropdown_btn.pack(side="left")
+        compact_dropdown_btn.bind("<Button-1>", self._show_ai_result_actions_menu)
+        compact_dropdown_btn.bind("<Enter>", lambda e: compact_dropdown_btn.config(bg=BG_MENU, fg=FG_TEXT))
+        compact_dropdown_btn.bind("<Leave>", lambda e: compact_dropdown_btn.config(bg=FG_ACCENT, fg="#ffffff"))
+
+        # 4. Response display box (placed BELOW Actions Row!)
         self.ai_response_box = tk.Frame(self.ai_footer_frame, bg=BG)
 
         self.ai_res_text = tk.Text(
-            self.ai_response_box, height=5, bg=BG, fg=FG_TEXT, wrap="word",
+            self.ai_response_box, height=4, bg=BG, fg=FG_TEXT, wrap="word",
             font=("Segoe UI", 9), relief="flat", highlightthickness=0,
             selectbackground=SELECT_BG, selectforeground=FG_TEXT
         )
@@ -710,84 +774,37 @@ class NotesWidget(tk.Toplevel):
         self.ai_res_text.pack(side="left", fill="x", expand=True)
         ai_res_scroll.pack(side="right", fill="y")
 
-        # Actions row (Toggle View / Pop-up Preview / Insert / Replace / Copy)
-        self.ai_actions_frame = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
-
-        # Wide view frame (horizontal buttons)
-        self.ai_actions_wide_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
-        self.ai_actions_wide_frame.pack(side="left")
-
-        def _act_btn(parent_frame, text, command):
-            btn = tk.Label(
-                parent_frame, text=text, bg=BG_MENU, fg=FG_TEXT,
-                font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
-            )
-            btn.pack(side="left", padx=2)
-            btn.bind("<Button-1>", lambda e: command())
-            btn.bind("<Enter>", lambda e: btn.config(bg=FG_ACCENT, fg="#ffffff"))
-            btn.bind("<Leave>", lambda e: btn.config(bg=BG_MENU, fg=FG_TEXT))
-
-        self.ai_toggle_view_btn = tk.Label(
-            self.ai_actions_wide_frame, text="📝 Xem Raw", bg=BG_MENU, fg=FG_TEXT,
-            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=6, pady=2
-        )
-        self.ai_toggle_view_btn.pack(side="left", padx=2)
-        self.ai_toggle_view_btn.bind("<Button-1>", lambda e: self._toggle_ai_view_mode())
-        self.ai_toggle_view_btn.bind("<Enter>", lambda e: self.ai_toggle_view_btn.config(bg=FG_ACCENT, fg="#ffffff"))
-        self.ai_toggle_view_btn.bind("<Leave>", lambda e: self._update_toggle_btn_style())
-
-        _act_btn(self.ai_actions_wide_frame, "👁️ Pop-up", self._ai_open_preview)
-        _act_btn(self.ai_actions_wide_frame, "📥 Chèn", self._ai_insert_at_cursor)
-        _act_btn(self.ai_actions_wide_frame, "🔄 Thay thế", self._ai_replace_content)
-        _act_btn(self.ai_actions_wide_frame, "📋 Sao chép", self._ai_copy_response)
-
-        # Compact view frame (collapsed dropdown button for narrow screens)
-        self.ai_actions_compact_frame = tk.Frame(self.ai_actions_frame, bg=BG_HEADER)
-
-        compact_dropdown_btn = tk.Label(
-            self.ai_actions_compact_frame, text="⚡ Thao tác kết quả ▾", bg=FG_ACCENT, fg="#ffffff",
-            font=("Segoe UI", 8, "bold"), cursor="hand2", padx=8, pady=2
-        )
-        compact_dropdown_btn.pack(side="left")
-        compact_dropdown_btn.bind("<Button-1>", self._show_ai_result_actions_menu)
-        compact_dropdown_btn.bind("<Enter>", lambda e: compact_dropdown_btn.config(bg=BG_MENU, fg=FG_TEXT))
-        compact_dropdown_btn.bind("<Leave>", lambda e: compact_dropdown_btn.config(bg=FG_ACCENT, fg="#ffffff"))
-
-        # Responsive listener on ai_footer_frame width resize
+        # Responsive listener on ai_footer_frame width resize (Option B multi-tier breakpoints)
         def _on_footer_resize(event):
-            if event.width < 420:
+            w = event.width
+            if w < 320:
                 self.ai_title_lbl.config(text="✦ AI")
                 self.hdr_wide_menus.pack_forget()
                 self.hdr_compact_menu.pack(side="right")
                 self.ai_actions_wide_frame.pack_forget()
                 self.ai_actions_compact_frame.pack(side="left")
+            elif w < 460:
+                self.ai_title_lbl.config(text="✦ Trợ lý AI")
+                self.hdr_compact_menu.pack_forget()
+                self.hdr_wide_menus.pack(side="right")
+                self.ai_actions_compact_frame.pack_forget()
+                self.ai_actions_wide_frame.pack(side="left")
+                self.ai_popup_btn.config(text="👁️ Pop-up")
+                self.ai_insert_btn.config(text="📥 Chèn")
+                self.ai_replace_btn.config(text="🔄 Thay thế")
+                self.ai_copy_btn.config(text="📋 Copy")
             else:
                 self.ai_title_lbl.config(text="✦ Trợ lý AI (Gemini)")
                 self.hdr_compact_menu.pack_forget()
                 self.hdr_wide_menus.pack(side="right")
                 self.ai_actions_compact_frame.pack_forget()
                 self.ai_actions_wide_frame.pack(side="left")
+                self.ai_popup_btn.config(text="👁️ Pop-up")
+                self.ai_insert_btn.config(text="📥 Chèn vào con trỏ")
+                self.ai_replace_btn.config(text="🔄 Thay thế nội dung")
+                self.ai_copy_btn.config(text="📋 Sao chép")
 
         self.ai_footer_frame.bind("<Configure>", _on_footer_resize)
-
-        # Input Row (Entry + Send Button)
-        input_row = tk.Frame(self.ai_footer_frame, bg=BG_HEADER)
-        input_row.pack(fill="x", pady=(4, 0))
-
-        self.ai_entry = tk.Entry(
-            input_row, bg=BG, fg=FG_TEXT, insertbackground=FG_TEXT,
-            relief="flat", font=("Segoe UI", 9), highlightthickness=1,
-            highlightbackground=BORDER, highlightcolor=FG_ACCENT
-        )
-        self.ai_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
-        self.ai_entry.bind("<Return>", lambda e: self._send_ai_prompt())
-
-        self.ai_send_btn = tk.Label(
-            input_row, text="Gửi ➔", bg=FG_ACCENT, fg="#ffffff",
-            font=("Segoe UI", 9, "bold"), cursor="hand2", padx=10, pady=3
-        )
-        self.ai_send_btn.pack(side="right")
-        self.ai_send_btn.bind("<Button-1>", lambda e: self._send_ai_prompt())
 
     def _show_ai_actions_menu(self, event):
         items = [
@@ -956,10 +973,10 @@ class NotesWidget(tk.Toplevel):
         if not custom_prompt:
             self.ai_entry.delete(0, "end")
 
-        self.ai_response_box.pack(fill="x", pady=4)
+        self.ai_actions_frame.pack_forget()
+        self.ai_response_box.pack(fill="x", pady=(2, 4))
         self.ai_res_text.delete("1.0", "end")
         self.ai_res_text.insert("end", "⏳ Trợ lý AI đang suy nghĩ và xử lý...")
-        self.ai_actions_frame.pack_forget()
 
         context = self.text.get("1.0", "end-1c")
         api_key = store.get_gemini_api_key()
@@ -970,7 +987,13 @@ class NotesWidget(tk.Toplevel):
                 self.ai_view_mode = "rendered"
                 self._update_ai_response_display()
                 if success:
-                    self.ai_actions_frame.pack(fill="x", pady=(4, 0))
+                    self.ai_actions_frame.pack(fill="x", pady=(2, 4), before=self.ai_response_box)
+                    try:
+                        win_h = self.winfo_height()
+                        flex_h = max(3, min(10, win_h // 70))
+                        self.ai_res_text.configure(height=flex_h)
+                    except Exception:
+                        pass
                     if model_used:
                         self.ai_model_lbl.config(text=f"[{model_used}]")
                     self.ai_chat_history.append({"role": "user", "text": prompt})
@@ -1454,11 +1477,6 @@ class NotesWidget(tk.Toplevel):
         self._highlight_urls()
         if self._pending_images:
             self.after(IMAGE_CHECK_INTERVAL_MS, self._check_lazy_images)
-        if hasattr(self.text, "edit_reset"):
-            try:
-                self.text.edit_reset()
-            except Exception:
-                pass
 
     # ---------- cloud sync ----------
     def _load_square_photo(self, path, size):
