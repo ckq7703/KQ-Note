@@ -41,11 +41,17 @@ jobs:
             --windows-console-mode=disable `
             --windows-icon-from-ico=assets/logo-kqnote.ico `
             --include-data-dir=assets=assets `
-            --version-file=version_info.txt `
+            --company-name="KQ Note" `
+            --product-name="KQ Note" `
+            --file-version=1.4.3.0 `
+            --product-version=1.4.3.0 `
+            --file-description="KQ Note - Desktop Cheatsheet Note App" `
+            --copyright="Copyright (c) 2026 ckq7703" `
             --output-dir=dist `
             --output-filename=KQNote.exe `
             main.py
-          if (Test-Path "dist\main.dist") { Rename-Item -Path "dist\main.dist" -NewName "KQNote" -Force }
+          if (Test-Path "dist\KQNote") { Remove-Item -Recurse -Force "dist\KQNote" }
+          if (Test-Path "dist\main.dist") { Move-Item -Path "dist\main.dist" -Destination "dist\KQNote" -Force }
 
       - name: Compile Inno Setup Installer
         run: |
