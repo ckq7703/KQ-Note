@@ -99,12 +99,15 @@ class SyncClient:
         auth_store.set_tokens(data["access_token"], data["refresh_token"])
         auth_store.set_account_email(email)
 
-    def login_with_google(self, google_id_token):
+    def login_with_google(self, auth):
+        # `auth` is {"code", "code_verifier", "redirect_uri"} from the loopback
+        # flow. The backend does the code->token exchange with Google (it holds
+        # the OAuth client secret) so no secret ever ships in the client.
         try:
             resp = self.session.post(
                 f"{self.base_url}/auth/google",
-                json={"id_token": google_id_token},
-                timeout=10,
+                json=auth,
+                timeout=15,
             )
         except requests.exceptions.RequestException as e:
             raise OfflineError(str(e)) from e

@@ -1,11 +1,20 @@
 """Google Sign-In for the desktop client via the OAuth 2.0 loopback flow.
 
 Standard "installed app" pattern: open the system browser at Google's consent
-screen, receive the authorization code on a short-lived local HTTP server,
-then exchange it for a Google ID token. That ID token is handed to our own
-backend (`POST /auth/google`), which verifies it and issues our own
-access/refresh tokens — Google is only ever used to prove "this is
+screen and receive the authorization code on a short-lived local HTTP server.
+
+The authorization code is then handed to our own backend (`POST /auth/google`),
+which performs the code->token exchange with Google (it holds the OAuth
+*client secret*), verifies the resulting Google ID token and issues our own
+access/refresh tokens. Google is only ever used to prove "this is
 <email>@gmail.com", nothing else in the app talks to Google again after that.
+
+Security note: the desktop client deliberately does **not** contain the OAuth
+client secret. Only the client *id* is embedded here — it is not confidential
+(it is visible in the browser URL during consent) — and the flow is bound with
+PKCE so the intercepted code is useless without the verifier. The client secret
+lives exclusively in the backend's environment and is never shipped in a
+release binary.
 
 Must be called off the Tk main thread (it blocks waiting for the browser).
 """
@@ -13,21 +22,26 @@ Must be called off the Tk main thread (it blocks waiting for the browser).
 import base64
 import hashlib
 import http.server
-import json
 import os
 import secrets
 import urllib.parse
 import webbrowser
 
-import requests
+# Public "Desktop app" OAuth client id. Not a secret. Overridable for
+# self-hosted deployments via the KQNOTE_GOOGLE_CLIENT_ID environment variable.
+_DEFAULT_CLIENT_ID = (
+    "379908990291-36934dgf21e8u90qj8f5ldnoij76ij1k.apps.googleusercontent.com"
+)
+_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
+_SCOPE = "openid email profile"
 
-_CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "google_client_secret.json")
 _LOGO_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "..", "assets", "logo-kqnote.png"
 )
-_DEFAULT_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
-_DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
-_SCOPE = "openid email profile"
+
+
+def _client_id():
+    return os.environ.get("KQNOTE_GOOGLE_CLIENT_ID", "").strip() or _DEFAULT_CLIENT_ID
 
 
 def _logo_data_uri():
@@ -128,18 +142,6 @@ class GoogleLoginError(Exception):
     pass
 
 
-def _load_credentials():
-    try:
-        with open(_CREDENTIALS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        raise GoogleLoginError(f"Không đọc được cấu hình Google OAuth: {e}") from e
-    try:
-        return data["installed"]
-    except KeyError:
-        raise GoogleLoginError("google_client_secret.json thiếu mục 'installed'")
-
-
 def _make_pkce_pair():
     verifier = secrets.token_urlsafe(64)[:128]
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -176,12 +178,12 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 
 def run_oauth_flow(timeout=180):
-    """Blocks until the user finishes the Google consent flow. Returns a Google ID token string."""
-    creds = _load_credentials()
-    client_id = creds["client_id"]
-    client_secret = creds["client_secret"]
-    token_uri = creds.get("token_uri", _DEFAULT_TOKEN_URI)
-    auth_uri = creds.get("auth_uri", _DEFAULT_AUTH_URI)
+    """Blocks until the user finishes the Google consent flow.
+
+    Returns a dict ``{"code", "code_verifier", "redirect_uri"}`` to be exchanged
+    for tokens by the backend. Raises :class:`GoogleLoginError` on any failure.
+    """
+    client_id = _client_id()
 
     _CallbackHandler.result = {}
     server = http.server.HTTPServer(("127.0.0.1", 0), _CallbackHandler)
@@ -201,7 +203,16 @@ def run_oauth_flow(timeout=180):
         "access_type": "online",
         "prompt": "select_account",
     })
-    webbrowser.open(f"{auth_uri}?{query}")
+    try:
+        opened = webbrowser.open(f"{_AUTH_URI}?{query}")
+    except webbrowser.Error:
+        opened = False
+    if not opened:
+        server.server_close()
+        raise GoogleLoginError(
+            "Không mở được trình duyệt để đăng nhập Google. "
+            "Hãy đặt một trình duyệt mặc định rồi thử lại."
+        )
 
     server.timeout = timeout
     try:
@@ -217,22 +228,8 @@ def run_oauth_flow(timeout=180):
     if result.get("state") != state:
         raise GoogleLoginError("Phản hồi OAuth không hợp lệ (state không khớp)")
 
-    try:
-        resp = requests.post(token_uri, data={
-            "code": result["code"],
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-            "code_verifier": verifier,
-        }, timeout=15)
-    except requests.exceptions.RequestException as e:
-        raise GoogleLoginError(f"Không kết nối được tới Google: {e}") from e
-
-    if resp.status_code != 200:
-        raise GoogleLoginError(f"Google từ chối đổi mã lấy token: {resp.text}")
-
-    id_token = resp.json().get("id_token")
-    if not id_token:
-        raise GoogleLoginError("Phản hồi từ Google thiếu id_token")
-    return id_token
+    return {
+        "code": result["code"],
+        "code_verifier": verifier,
+        "redirect_uri": redirect_uri,
+    }

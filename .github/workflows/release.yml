@@ -26,7 +26,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nuitka zstandard ordered-set pillow pywin32 requests google-auth google-auth-oauthlib pynput
+          # No google-auth* / OAuth client secret here: the desktop client only
+          # opens the browser + catches the loopback code; the backend does the
+          # code->token exchange. Nothing secret is bundled into the release.
+          pip install nuitka zstandard ordered-set pillow pywin32 requests pynput
           if (Test-Path "requirements.txt") { pip install -r requirements.txt }
 
       - name: Pre-process XOR Obfuscation
@@ -44,8 +47,8 @@ jobs:
             --include-data-dir=assets=assets `
             --company-name="KQ Note" `
             --product-name="KQ Note" `
-            --file-version=1.4.3.0 `
-            --product-version=1.4.3.0 `
+            --file-version=1.4.4.0 `
+            --product-version=1.4.4.0 `
             --file-description="KQ Note - Desktop Cheatsheet Note App" `
             --copyright="Copyright (c) 2026 ckq7703" `
             --output-dir=dist `

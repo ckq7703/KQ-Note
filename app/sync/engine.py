@@ -74,8 +74,8 @@ class SyncEngine:
         from . import google_oauth  # imported lazily: pulls in webbrowser/http.server
 
         try:
-            google_token = google_oauth.run_oauth_flow()
-            self.client.login_with_google(google_token)
+            auth = google_oauth.run_oauth_flow()
+            self.client.login_with_google(auth)
             account = self.client.fetch_account()
             auth_store.set_account_email(account["email"])
             if account.get("avatar_url"):
@@ -86,6 +86,11 @@ class SyncEngine:
             self.events.put(("google_login_success", None))
         except (google_oauth.GoogleLoginError, SyncError) as e:
             self.events.put(("google_login_error", str(e)))
+        except Exception as e:  # never let the daemon thread die silently
+            self.events.put((
+                "google_login_error",
+                f"Lỗi không xác định khi đăng nhập Google: {e}",
+            ))
 
     def _download_avatar(self, url):
         try:

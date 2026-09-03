@@ -1,3 +1,4 @@
+import requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -61,11 +62,55 @@ def login(payload: UserCredentials, db: Session = Depends(get_db)):
     return _issue_token_pair(user.id)
 
 
+def _exchange_code_for_id_token(payload: GoogleLoginRequest) -> str:
+    """Loopback code -> Google ID token, using the server-held client secret."""
+    if not settings.google_client_secret:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Server is missing GOOGLE_CLIENT_SECRET",
+        )
+    try:
+        resp = requests.post(
+            settings.google_token_uri,
+            data={
+                "code": payload.code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": payload.redirect_uri,
+                "grant_type": "authorization_code",
+                "code_verifier": payload.code_verifier,
+            },
+            timeout=15,
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Google token endpoint unreachable: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Google rejected the code: {resp.text}")
+    id_tok = resp.json().get("id_token")
+    if not id_tok:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Google response has no id_token")
+    return id_tok
+
+
 @router.post("/google", response_model=TokenPair)
 def login_with_google(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+    if payload.code:
+        if not payload.code_verifier or not payload.redirect_uri:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "code_verifier and redirect_uri are required with code",
+            )
+        raw_id_token = _exchange_code_for_id_token(payload)
+    elif payload.id_token:
+        raw_id_token = payload.id_token
+    else:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide either 'code' or 'id_token'"
+        )
+
     try:
         idinfo = google_id_token.verify_oauth2_token(
-            payload.id_token, google_requests.Request(), settings.google_client_id
+            raw_id_token, google_requests.Request(), settings.google_client_id
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid Google ID token: {e}")

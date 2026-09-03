@@ -1,13 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
-import os
-
+# The Google OAuth client secret is NOT bundled: the desktop client only needs
+# the public client id (hard-coded in app/sync/google_oauth.py) and the backend
+# performs the code->token exchange. Nothing secret ships in the binary.
 datas = [('assets', 'assets')]
-if os.path.exists('app/sync/google_client_secret.json'):
-    datas.append(('app/sync/google_client_secret.json', 'app/sync'))
-elif os.path.exists('app/sync/google_client_secret.json.example'):
-    datas.append(('app/sync/google_client_secret.json.example', 'app/sync'))
 
 a = Analysis(
     ['main.py'],

@@ -1622,6 +1622,11 @@ class NotesWidget(tk.Toplevel):
                 self._on_login_success()
             elif kind == "google_login_error":
                 self._update_cloud_icon()
+                messagebox.showerror(
+                    "Đăng nhập Cloud thất bại",
+                    payload or "Không rõ nguyên nhân. Vui lòng thử lại.",
+                    parent=self,
+                )
             elif kind == "synced":
                 self._update_cloud_icon()
             elif kind == "conflict_resolved":

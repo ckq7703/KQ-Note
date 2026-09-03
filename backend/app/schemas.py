@@ -9,7 +9,13 @@ class UserCredentials(BaseModel):
 
 
 class GoogleLoginRequest(BaseModel):
-    id_token: str
+    # New desktop clients send the loopback authorization code + PKCE verifier;
+    # the server exchanges it with Google. `id_token` is kept for older clients
+    # that did the exchange themselves.
+    code: str | None = None
+    code_verifier: str | None = None
+    redirect_uri: str | None = None
+    id_token: str | None = None
 
 
 class AccountOut(BaseModel):
