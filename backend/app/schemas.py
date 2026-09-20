@@ -54,3 +54,59 @@ class NoteUpdate(BaseModel):
 
 class ImageManifest(BaseModel):
     ids: list[str]
+
+
+# ---- v2 multi-note ----
+
+class NoteV2(BaseModel):
+    id: str
+    title: str
+    content: str
+    position: str
+    rev: int
+    seq: int
+    deleted: bool
+    purged: bool
+    deleted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    updated_by_device: str | None = None
+
+
+class NotePut(BaseModel):
+    content: str
+    base_rev: int = Field(ge=0, description="0 to create; otherwise the rev the edit is based on")
+    device_id: str | None = Field(default=None, max_length=64)
+    mutation_id: str | None = Field(default=None, max_length=64)
+    position: str | None = Field(default=None, max_length=64)
+    restore: bool = Field(default=False, description="also un-trash a trashed note")
+
+
+class NoteTransition(BaseModel):
+    """Body for trash / restore."""
+
+    base_rev: int = Field(ge=1)
+    device_id: str | None = Field(default=None, max_length=64)
+    mutation_id: str | None = Field(default=None, max_length=64)
+
+
+class NotePosition(BaseModel):
+    position: str = Field(max_length=64)
+
+
+class ChangesOut(BaseModel):
+    changes: list[NoteV2]
+    cursor: int
+    has_more: bool
+
+
+class RevisionOut(BaseModel):
+    id: int
+    rev: int
+    created_at: datetime
+    device_id: str | None = None
+    size: int
+
+
+class RevisionDetail(RevisionOut):
+    content: str

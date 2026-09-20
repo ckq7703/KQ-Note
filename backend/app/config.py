@@ -15,7 +15,18 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_token_uri: str = "https://oauth2.googleapis.com/token"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # Multi-note (v2) limits and retention.
+    max_note_bytes: int = 1_000_000
+    max_notes_per_user: int = 5000
+    trash_retention_days: int = 60  # trashed notes are purged after this (same as OneNote's recycle bin)
+    tombstone_retention_days: int = 90  # purged rows stay this long so other devices learn about them
+    revision_keep: int = 50  # newest N history snapshots per note
+    revision_keep_min: int = 5  # always kept even when older than revision_retention_days
+    revision_retention_days: int = 30
+    revision_coalesce_seconds: int = 60  # at most one snapshot per note per window (unless a big shrink)
+
+    # extra="ignore": the same .env also feeds docker-compose (POSTGRES_* etc.).
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 settings = Settings()

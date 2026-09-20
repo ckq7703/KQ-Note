@@ -3,18 +3,19 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_current_user
-from ..models import Note, User
+from ..models import LegacyNote, User
 from ..schemas import NoteOut, NoteUpdate
 
-router = APIRouter(prefix="/notes", tags=["notes"])
+# v1 single-slot endpoints, kept only so 1.4.x clients keep working; new clients use /v2/notes.
+router = APIRouter(prefix="/notes", tags=["notes-legacy"])
 
 
 @router.get("/me", response_model=NoteOut)
 def get_my_note(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    note = db.get(Note, user.id)
+    note = db.get(LegacyNote, user.id)
     if note is None:
         # Should not happen (a note row is created at registration), but degrade gracefully.
-        note = Note(user_id=user.id, content="", version=0)
+        note = LegacyNote(user_id=user.id, content="", version=0)
         db.add(note)
         db.commit()
         db.refresh(note)
@@ -27,9 +28,9 @@ def update_my_note(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    note = db.get(Note, user.id)
+    note = db.get(LegacyNote, user.id)
     if note is None:
-        note = Note(user_id=user.id, content="", version=0)
+        note = LegacyNote(user_id=user.id, content="", version=0)
         db.add(note)
         db.flush()
 

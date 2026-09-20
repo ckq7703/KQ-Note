@@ -1,6 +1,6 @@
 # Thiết kế lại lưu trữ & đồng bộ note (nhiều note / user)
 
-Trạng thái: **Phase 0 đã làm**, Phase 1–4 chờ thực hiện.
+Trạng thái: **Phase 0 và Phase 1 (server v2) đã làm**, chưa deploy. Phase 2–4 chờ thực hiện.
 
 ## Vấn đề hiện tại
 
@@ -63,7 +63,7 @@ Nguyên tắc: local là nguồn để làm việc, server là nguồn để đ�
 | Phase | Nội dung | Trạng thái |
 |---|---|---|
 | 0 | Hotfix an toàn: ghi atomic, khôi phục index hỏng, backup trước khi cloud ghi đè hoặc xoá note, vá editor trống khi khởi động, backup Postgres định kỳ | **Xong** (chưa release/deploy) |
-| 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | Chưa |
+| 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | **Xong** (chưa deploy; rate limit chuyển sang Phase 4) |
 | 2 | Client: SQLite, UUID, thùng rác, gắn account | Chưa |
 | 3 | Client: engine sync v2 (outbox, cursor, bản sao xung đột, UI trạng thái) | Chưa |
 | 4 | Auto-merge 3-way theo dòng, dọn ảnh, deprecate API cũ, min-version gate | Chưa |
@@ -81,3 +81,40 @@ Nguyên tắc: local là nguồn để làm việc, server là nguồn để đ�
 - `app/sync/state.py`, `app/config.py`: ghi atomic.
 - `backend/docker-compose.yml`: dịch vụ `db_backup` chạy `pg_dump -Fc` mỗi 24 giờ vào volume `db_backups`, giữ 14 bản.
 - Test: `python -m unittest tests.test_store_safety`.
+
+## Phase 1: chi tiết đã làm (server v2)
+
+Code: `backend/app/{models,note_service,migrations,maintenance}.py`, `backend/app/routers/notes_v2.py`. Test: `backend/tests` (32 test, chạy được trên SQLite; đặt `TEST_DATABASE_URL` trỏ tới một Postgres **dùng riêng để test** để chạy thêm các test đồng thời; test tự `drop_all`, tuyệt đối không trỏ vào DB thật).
+
+### Hợp đồng API `/v2/notes` (cần Bearer token như các API khác)
+
+| Method | Đường dẫn | Ý nghĩa |
+|---|---|---|
+| GET | `/changes?cursor=&limit=` | Delta feed theo `seq` tăng dần: `{changes, cursor, has_more}`. `cursor=0` = từ đầu. Trả **410** nếu cursor lớn hơn seq hiện tại của server (DB đã bị restore) hoặc nhỏ hơn `tombstone_floor` (có thể đã lỡ một lần xoá) → client phải resync từ `cursor=0` |
+| GET | `/{id}` | Một note (kể cả trong thùng rác) |
+| PUT | `/{id}` | Tạo (`base_rev=0`) hoặc sửa. `base_rev` sai → **409** `{error: "conflict", note: <bản server>}`, **không bao giờ ghi đè**. Sửa note đang trong thùng rác cần `restore: true`. Note không tồn tại mà `base_rev>0` → 404 |
+| POST | `/{id}/trash`, `/{id}/restore` | Xoá mềm / khôi phục, cũng yêu cầu `base_rev` (thiết bị cũ không thể xoá mất bản mới sửa) |
+| PATCH | `/{id}` | Đổi `position` (last-write-wins, không đổi `rev`, không xung đột với sửa nội dung) |
+| GET | `/{id}/revisions`, `/{id}/revisions/{rid}` | Lịch sử; khôi phục bằng cách PUT lại nội dung cũ |
+
+- `id` là UUID do client sinh, duy nhất theo từng user. `mutation_id` cho phép retry an toàn khi mất response.
+- `rev` = phiên bản nội dung (dùng làm `base_rev`); `seq` = vị trí trong feed (đổi cả khi chỉ đổi thứ tự).
+- Trạng thái note: live → trashed (giữ nội dung) → purged (mất nội dung, giữ dòng làm tombstone).
+- Ghi: mỗi lần ghi khoá dòng `user_sync` của user rồi mới đọc/kiểm tra `rev`, nên `seq` luôn theo thứ tự commit và client không bao giờ bỏ sót thay đổi.
+- Giới hạn (cấu hình được trong `config.py`): 1 MB/note (413), 5000 note/user (403).
+- Lịch sử: tối đa 1 bản/phút/note, nhưng **luôn** lưu khi nội dung bị co lại quá 50% (chống xoá nhầm); giữ 50 bản gần nhất và 30 ngày (luôn giữ 5 bản mới nhất).
+- Job dọn (`maintenance.py`, chạy mỗi 6 giờ trong tiến trình API): thùng rác > 60 ngày → purged; tombstone > 90 ngày → xoá hẳn và nâng `tombstone_floor`.
+
+### Migration
+
+Khi API khởi động và thấy bảng `notes` dạng v1: trong **một transaction** đổi tên thành `notes_legacy` (không xoá), tạo bảng mới, copy mỗi blob không rỗng thành 1 note (UUID mới, `rev=1`). Chạy lại là no-op. Đã dry-run trên bản restore của DB production trong container tạm: 2 user → 2 note, `notes_legacy` và 9 ảnh còn nguyên.
+
+`/notes/me` (v1) vẫn chạy, đọc/ghi `notes_legacy`, để client 1.4.x không hỏng. Lưu ý: sau migration, note v2 chỉ là **ảnh chụp** của blob lúc đó; nếu người dùng còn dùng client cũ thì blob legacy tiếp tục thay đổi mà không đẩy sang v2. **Việc cho Phase 3:** client mới đọc `/notes/me` một lần và import thành note thường nếu nội dung chưa có trong các note v2.
+
+### Deploy và rollback
+
+1. Chạy `pg_dump` thủ công trước khi deploy (dịch vụ `db_backup` chỉ có sau khi `docker compose up -d` bản compose mới).
+2. Deploy image mới; migration tự chạy khi khởi động.
+3. Rollback: image cũ **không** chạy được trên DB đã migrate (bảng `notes` đã đổi hình). Muốn quay lại: dừng API, chạy trong Postgres
+   `DROP TABLE note_revisions, notes, user_sync; ALTER TABLE notes_legacy RENAME TO notes; ALTER INDEX notes_legacy_pkey RENAME TO notes_pkey;`
+   rồi chạy lại image cũ. Cách này mất các note v2 tạo sau migration, nên chỉ dùng khi chưa có client v2 nào ghi dữ liệu.

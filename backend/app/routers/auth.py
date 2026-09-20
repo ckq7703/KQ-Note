@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..models import Note, User
+from ..models import User
 from ..schemas import (
     AccessTokenResponse,
     AccountOut,
@@ -43,8 +43,6 @@ def register(payload: UserCredentials, db: Session = Depends(get_db)):
 
     user = User(email=payload.email, password_hash=hash_password(payload.password))
     db.add(user)
-    db.flush()  # assign user.id before creating the note row
-    db.add(Note(user_id=user.id, content="", version=0))
     db.commit()
     db.refresh(user)
 
@@ -132,8 +130,6 @@ def login_with_google(payload: GoogleLoginRequest, db: Session = Depends(get_db)
         else:
             user = User(email=email, password_hash=None, google_sub=google_sub)
             db.add(user)
-            db.flush()
-            db.add(Note(user_id=user.id, content="", version=0))
     user.avatar_url = avatar_url  # refresh in case their Google photo changed
     db.commit()
     db.refresh(user)
