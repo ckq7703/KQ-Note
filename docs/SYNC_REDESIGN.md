@@ -214,3 +214,17 @@ Lỗi thật do FuzzTest tìm ra và đã sửa (đều là mất chữ): ghi đ
 - Chưa có: tự gộp 3-way theo dòng, dọn ảnh mồ côi, ảnh đặt ID theo hash, rate limit, chặn phiên bản cũ (Phase 4).
 - Xoá vĩnh viễn ở local vẫn chưa báo server (server tự purge sau 60 ngày).
 - Chưa chạy trên Windows thật: phần widget được kiểm qua Xvfb với stub `winfx`, chưa kiểm hành vi thanh tiêu đề/dock trên Windows.
+
+## Checklist thử tay trên Windows trước khi phát hành 1.5.0
+
+Phần tự động không kiểm được giao diện thật trên Windows (thanh tiêu đề, dock, con trỏ chuột, keyring). Làm trên một **bản sao** thư mục dữ liệu, không dùng dữ liệu duy nhất:
+
+1. Sao chép `%APPDATA%\NoteCheatsheet` ra chỗ khác. Cài bản mới, mở app: các ghi chú cũ, thứ tự và ghi chú đang mở phải còn nguyên; xuất hiện file `kqnote.sqlite3`; thư mục `notes_store` cũ vẫn còn.
+2. Tạo, sửa, kéo thả sắp xếp, xoá một ghi chú; mở Thùng rác (menu ba chấm) và khôi phục; thử xoá vĩnh viễn.
+3. Đăng nhập Google. Danh sách chuyển sang danh sách tài khoản, ghi chú local được tải lên (kiểm tra không bị nhân đôi ghi chú đã có trên tài khoản). Biểu tượng ☁ đổi màu.
+4. Cài bản 1.5.0 lên máy thứ hai (hoặc thư mục dữ liệu thứ hai), đăng nhập cùng tài khoản: đủ ghi chú, đúng thứ tự, thùng rác khớp.
+5. Ngắt mạng trên một máy, sửa vài ghi chú, bật lại: thay đổi tự lên trong vòng ~45 giây (hoặc "Đồng bộ ngay").
+6. Xung đột: ngắt mạng ở cả hai máy, sửa **cùng một ghi chú** ở hai nơi, bật mạng lần lượt: mỗi máy phải giữ đủ cả hai đoạn chữ (một ghi chú `[Xung đột] ...` xuất hiện) và có thông báo.
+7. Máy A đang mở ghi chú X, máy B xoá X: A phải chuyển sang ghi chú khác kèm thông báo, không văng lỗi.
+8. Đăng xuất: quay lại danh sách local; đăng nhập lại: không nhân đôi ghi chú.
+9. Dán ảnh vào một ghi chú ở máy A, đồng bộ, mở ở máy B: ảnh hiện ra.
