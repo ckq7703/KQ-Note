@@ -91,23 +91,30 @@ jobs:
             installer_output/KQNoteSetup-*.exe
             installer_output/KQNote-*-Portable.zip
           body: |
-            ## 🚀 KQ Note ${{ steps.version.outputs.TAG }}
+            ## KQ Note ${{ steps.version.outputs.TAG }}
 
-            ### ✨ Tính năng mới & Cải tiến:
-            - **Đồng bộ nhiều ghi chú giữa các thiết bị:** mỗi ghi chú được đồng bộ riêng (nội dung, thứ tự, thùng rác). Làm việc ngoại tuyến thoải mái, thay đổi tự gửi lên khi có mạng.
-            - **Không mất chữ khi sửa ở hai nơi:** nếu cùng một ghi chú bị sửa trên hai máy, phần bạn sửa được giữ thành ghi chú mới có tiêu đề `[Xung đột]` để gộp lại, không bao giờ bị ghi đè.
-            - **Thùng rác 60 ngày:** xóa ghi chú giờ là chuyển vào thùng rác (menu ba chấm → Thùng rác), có thể khôi phục hoặc xóa vĩnh viễn.
-            - **Biểu tượng trạng thái đồng bộ** ở thanh tiêu đề: đã đồng bộ, đang đồng bộ, ngoại tuyến hoặc lỗi.
-            - **Lưu trữ an toàn hơn:** dữ liệu chuyển sang cơ sở dữ liệu SQLite, ghi theo giao dịch; có bản sao lưu tự động trước các thao tác có thể làm mất nội dung.
+            Multi-note cloud sync, a safer local storage engine, and a trash with restore.
 
-            ### ⚠️ Lưu ý khi nâng cấp:
-            - **Hãy cập nhật tất cả thiết bị** lên bản này. Các bản cũ (1.4.x trở xuống) không còn đồng bộ được với bản mới.
-            - Lần mở đầu tiên, ứng dụng tự chuyển ghi chú sang định dạng mới. **Dữ liệu cũ không bị xóa** và vẫn nằm trong `%APPDATA%\NoteCheatsheet`; nên sao chép thư mục này để dự phòng trước khi cập nhật.
-            - Lần đăng nhập đầu tiên sẽ tải các ghi chú trên máy lên tài khoản (không ghi đè ghi chú nào đã có).
+            ### What's new
 
-            ---
-            ### 📦 Hướng dẫn cài đặt:
-            - **File Cài đặt (`KQNoteSetup-*.exe`):** Tải về và chạy file installer để tự động cài đặt ứng dụng vào hệ thống.
-            - **File Portable (`KQNote-*-Portable.zip`):** Giải nén và chạy trực tiếp `KQNote.exe` không cần cài đặt.
+            - **Sync for every note.** Each note syncs individually between your devices, including its order and its trash state. Work offline; changes are kept on the device and sent automatically when the connection returns.
+            - **No overwritten work.** If the same note is edited on two devices, edits in different places are merged line by line. If the edits collide, your version is kept as a new note titled `[Xung đột]` ("conflict") so that no text is lost.
+            - **Trash with 60-day retention.** Deleting a note moves it to the trash (three-dot menu, Trash). Restore it, delete it permanently, or empty the trash. Permanent deletion also removes the note from the server.
+            - **Sync status at a glance.** A cloud icon in the title bar shows whether sync is up to date, running, offline, or has an error, and the menu shows the details.
+            - **Safer storage.** Notes now live in a local SQLite database with transactional writes. Your previous notes are converted automatically on first launch and the old files are left untouched.
+
+            ### Upgrade notes
+
+            - **Update every device you sync.** Versions before 1.5 use an older single-note sync protocol and cannot sync with 1.5.
+            - On first launch your existing notes are converted. Nothing is deleted: the old files stay in `%APPDATA%\NoteCheatsheet`. Copying that folder before upgrading is recommended.
+            - The first time you sign in, the notes on the device are uploaded to your account as new notes. Nothing already in the account is overwritten, and identical notes are not duplicated.
+            - Server operators: the sync API gains request rate limiting, an optional minimum client version, and retirement of the old single-note endpoint. See the README for the new settings.
+
+            ### Installation
+
+            - **`KQNoteSetup-${{ steps.version.outputs.TAG }}.exe`**: installer. Per-user install, no administrator rights required.
+            - **`KQNote-${{ steps.version.outputs.TAG }}-Portable.zip`**: extract and run `KQNote.exe`, no installation needed.
+
+            Requires Windows 10 or Windows 11 (64-bit).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
