@@ -20,8 +20,10 @@ Tích hợp công cụ chụp ảnh màn hình và hỗ trợ dán hình ảnh t
 Tự động phát hiện và tô sáng các liên kết web để truy cập nhanh bằng trình duyệt mặc định.
 
 ### Đồng Bộ Đám Mây
-Tích hợp xác thực tài khoản Google để đồng bộ dữ liệu giữa các thiết bị.
-Cơ chế đồng bộ ngầm đảm bảo ứng dụng luôn hoạt động mượt mà ngay cả khi ngắt kết nối mạng.
+Tích hợp xác thực tài khoản Google để đồng bộ toàn bộ ghi chú giữa các thiết bị. Mỗi ghi chú được đồng bộ riêng, kể cả thứ tự và thùng rác.
+Cơ chế đồng bộ ngầm đảm bảo ứng dụng luôn hoạt động mượt mà ngay cả khi ngắt kết nối mạng: mọi thay đổi được giữ trên máy và tự gửi lên khi có mạng.
+Khi cùng một ghi chú được sửa ở hai nơi, ứng dụng không bao giờ ghi đè: phần bạn sửa được giữ thành một ghi chú mới có tiêu đề bắt đầu bằng [Xung đột] để bạn gộp lại.
+Biểu tượng đám mây ở thanh tiêu đề cho biết trạng thái đồng bộ.
 
 ## Hướng Dẫn Thao Tác Giao Diện
 
@@ -39,7 +41,7 @@ Nhấp và giữ biểu tượng tay kéo ở mép trái của thẻ ghi chú, s
 Bấm vào biểu tượng ba chấm góc trên bên phải thanh tiêu đề để truy cập các tính năng:
 Bật hoặc tắt chế độ ghim cửa sổ trên cùng.
 Kích hoạt công cụ chụp ảnh màn hình (chỉ khả dụng trong màn hình biên tập ghi chú).
-Quản lý đăng nhập tài khoản Google và kích hoạt đồng bộ thủ công.
+Quản lý đăng nhập tài khoản Google, xem trạng thái và kích hoạt đồng bộ thủ công.
 
 ## Bảng Phím Tắt
 

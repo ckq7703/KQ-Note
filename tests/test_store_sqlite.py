@@ -365,11 +365,12 @@ class AccountScopeTest(StoreCase):
 
         copied = self.store.copy_local_notes_to_account("acct-1")
 
-        self.assertEqual(copied, len(local_before) - 1)  # everything but the blank one
+        # the blank note and the untouched starter note are not worth uploading
+        real = {i: c for i, c in local_before.items() if i != blank and c != self.store.DEFAULT_CONTENT}
+        self.assertEqual(copied, len(real))
         self.store.set_scope("acct-1")
         copies = self.store.list_notes()
-        self.assertEqual(sorted(self.store.load_note_by_id(n["id"]) for n in copies),
-                         sorted(c for i, c in local_before.items() if i != blank))
+        self.assertEqual(sorted(self.store.load_note_by_id(n["id"]) for n in copies), sorted(real.values()))
         self.assertTrue(set(n["id"] for n in copies).isdisjoint(local_before))  # brand-new ids
         state = self.sql("SELECT dirty, server_rev FROM notes WHERE account_id = 'acct-1'")
         self.assertTrue(all((r["dirty"], r["server_rev"]) == (1, 0) for r in state))
@@ -382,11 +383,106 @@ class AccountScopeTest(StoreCase):
     def test_copying_is_idempotent_per_account(self):
         self.store.create_note("# one")
         first = self.store.copy_local_notes_to_account("acct-1")
-        self.assertGreaterEqual(first, 1)
+        self.assertEqual(first, 1)
         self.assertEqual(self.store.copy_local_notes_to_account("acct-1"), 0)  # logging in again
         self.store.create_note("# two")
         self.assertEqual(self.store.copy_local_notes_to_account("acct-1"), 1)  # only the new one
         self.assertEqual(self.store.copy_local_notes_to_account("acct-2"), first + 1)  # other account gets all
+
+    def test_starter_text_is_uploaded_only_after_the_user_edits_it(self):
+        starter = self.store.create_note("# Ghi chú mới\n\nNội dung ghi chú...")
+        self.assertEqual(self.store.copy_local_notes_to_account("acct-1"), 0)
+        self.store.save_note_by_id(starter, "# Ghi chú mới\n\nNow with real content")
+        self.assertEqual(self.store.copy_local_notes_to_account("acct-1"), 1)
+
+    def test_skip_duplicates_only_remembers_notes_the_account_already_has(self):
+        self.store.set_scope("acct-1")
+        self.store.create_note("# already on the account")
+        self.store.set_scope(None)
+        self.store.create_note("# already on the account")
+        self.store.create_note("# only local")
+        self.assertEqual(self.store.copy_local_notes_to_account("acct-1", skip_duplicates=True), 1)
+        self.assertEqual(self.store.copy_local_notes_to_account("acct-1", skip_duplicates=True), 0)
+        self.store.set_scope("acct-1")
+        self.assertEqual(sorted(self.store.load_note_by_id(n["id"]) for n in self.store.list_notes()),
+                         ["# already on the account", "# only local"])
+
+
+class SchemaUpgradeTest(StoreCase):
+    V1_SCHEMA = [
+        """CREATE TABLE notes (id TEXT PRIMARY KEY, account_id TEXT, content TEXT NOT NULL DEFAULT '',
+           title TEXT NOT NULL DEFAULT '', snippet TEXT NOT NULL DEFAULT '', position TEXT NOT NULL DEFAULT '',
+           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER, legacy_id TEXT,
+           server_rev INTEGER NOT NULL DEFAULT 0, base_content TEXT, dirty INTEGER NOT NULL DEFAULT 0)""",
+        "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)",
+        "CREATE TABLE adoptions (local_id TEXT NOT NULL, account_id TEXT NOT NULL, PRIMARY KEY (local_id, account_id))",
+    ]
+
+    def test_a_version_1_database_is_upgraded_in_place_without_touching_notes(self):
+        conn = sqlite3.connect(self.store.get_db_path())
+        for statement in self.V1_SCHEMA:
+            conn.execute(statement)
+        conn.execute("INSERT INTO notes (id, content, position, created_at, updated_at) VALUES ('n1', 'kept', 'V', 1, 2)")
+        conn.execute("INSERT INTO kv VALUES ('active_note_id', 'n1')")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        conn.close()
+
+        self.restart()
+        self.store.initialize()
+
+        self.assertEqual(self.store.load_note_by_id("n1"), "kept")
+        self.assertEqual(self.store.get_active_note_id(), "n1")
+        row = self.sql("SELECT server_deleted, server_position FROM notes WHERE id = 'n1'")[0]
+        self.assertEqual((row[0], row[1]), (0, None))
+        self.assertEqual(self.sql("SELECT count(*) FROM sync_state")[0][0], 0)  # the table exists
+        self.assertEqual(self.sql("PRAGMA user_version")[0][0], self.store.SCHEMA_VERSION)
+
+
+class CompareAndSaveTest(StoreCase):
+    def test_saving_over_what_the_editor_loaded_is_a_normal_save(self):
+        nid = self.store.create_note("v1")
+        self.assertIsNone(self.store.save_note_by_id(nid, "v2", expected_old="v1"))
+        self.assertEqual(self.store.load_note_by_id(nid), "v2")
+
+    def test_if_the_text_changed_underneath_the_editor_text_becomes_a_conflict_copy(self):
+        nid = self.store.create_note("v1")
+        self.store.save_note_by_id(nid, "v2 applied by a sync")  # the editor still thinks it is v1
+
+        copy_id = self.store.save_note_by_id(nid, "v1 plus my typing", expected_old="v1")
+
+        self.assertEqual(self.store.load_note_by_id(nid), "v2 applied by a sync")  # not overwritten
+        copy = self.store.load_note_by_id(copy_id)
+        self.assertTrue(copy.startswith("# [Xung đột]"))
+        self.assertIn("v1 plus my typing", copy)
+        self.assertEqual(self.store.list_notes()[0]["id"], copy_id)  # visible at the top of the list
+
+    def test_a_copy_lands_in_the_notes_own_account_not_the_visible_scope(self):
+        self.store.set_scope("acct-1")
+        nid = self.store.create_note("v1")
+        self.store.save_note_by_id(nid, "v2")
+        copy_id = self.store.save_note_by_id(nid, "mine", expected_old="v1")
+        row = self.sql("SELECT account_id, dirty, server_rev FROM notes WHERE id = ?", (copy_id,))[0]
+        self.assertEqual(tuple(row), ("acct-1", 1, 0))
+
+    def test_text_already_equal_to_the_stored_text_is_never_a_conflict(self):
+        nid = self.store.create_note("same")
+        self.assertIsNone(self.store.save_note_by_id(nid, "same", expected_old="stale"))
+        self.assertEqual(len(self.store.list_notes()), 2)  # + the fresh-install note, no copy
+
+    def test_without_expected_old_the_save_is_unconditional(self):
+        nid = self.store.create_note("v1")
+        self.store.save_note_by_id(nid, "v2")
+        self.assertIsNone(self.store.save_note_by_id(nid, "v3"))
+        self.assertEqual(self.store.load_note_by_id(nid), "v3")
+
+
+class EnsureNoteTest(StoreCase):
+    def test_an_empty_scope_gets_one_fresh_note(self):
+        self.store.set_scope("acct-1")
+        active = self.store.ensure_note()
+        self.assertEqual(self.store.load_note_by_id(active), "# Ghi chú mới\n")
+        self.assertEqual(self.store.ensure_note(), active)  # and only one
 
 
 if __name__ == "__main__":

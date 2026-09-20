@@ -1,6 +1,6 @@
 # Thiết kế lại lưu trữ & đồng bộ note (nhiều note / user)
 
-Trạng thái: **Phase 0 (đã có trong code), Phase 1 (server v2, đã deploy) và Phase 2 (lưu trữ local SQLite, chưa phát hành) đã làm.** Phase 3–4 chờ thực hiện.
+Trạng thái: **Phase 0–3 đã làm trong code** (Phase 1 đã deploy lên server; Phase 2 và 3 là phần client, chưa phát hành). Phase 4 chờ thực hiện.
 
 ## Vấn đề hiện tại
 
@@ -64,8 +64,8 @@ Nguyên tắc: local là nguồn để làm việc, server là nguồn để đ�
 |---|---|---|
 | 0 | Hotfix an toàn: ghi atomic, khôi phục index hỏng, backup trước khi cloud ghi đè hoặc xoá note, vá editor trống khi khởi động, backup Postgres định kỳ | **Xong** (chưa release/deploy) |
 | 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | **Xong, đã deploy** (rate limit chuyển sang Phase 4) |
-| 2 | Client: SQLite, UUID, thùng rác, gắn account | **Xong** (chưa phát hành; sync vẫn là bản v1, xem bên dưới) |
-| 3 | Client: engine sync v2 (outbox, cursor, bản sao xung đột, UI trạng thái) | Chưa |
+| 2 | Client: SQLite, UUID, thùng rác, gắn account | **Xong** (chưa phát hành riêng; phát hành cùng Phase 3) |
+| 3 | Client: engine sync v2 (cursor, bản sao xung đột, UI trạng thái) | **Xong** (chưa phát hành) |
 | 4 | Auto-merge 3-way theo dòng, dọn ảnh, deprecate API cũ, min-version gate | Chưa |
 
 ## Kiểm thử
@@ -146,9 +146,9 @@ Code: `app/store.py` (viết lại phần lưu note; giữ nguyên tên hàm đ�
 - `store.set_scope(account_id)` chọn danh sách nào đang hiển thị (`None` = note chỉ có ở máy). `store.copy_local_notes_to_account(account_id)` **sao chép** các note local (bỏ qua note trống và note trong thùng rác) thành note mới của tài khoản, đánh dấu `dirty` để Phase 3 upload; note local gốc vẫn còn (đăng xuất là thấy lại) và bảng `adoptions` đảm bảo đăng nhập lại không nhân đôi note.
 - Các cột `server_rev`, `base_content`, `dirty` đã có nhưng **chưa có nơi nào đọc chúng** ngoài `dirty`; Phase 3 sẽ dùng.
 
-### Chưa đổi ở Phase 2
+### Ghi chú về Phase 2
 
-- Luồng đăng nhập/đồng bộ vẫn là bản v1 (một slot trên server, `sync_state.json`, cache `notes.cloud.<id>.txt`) và **chưa gọi `set_scope`**, nên các rủi ro ghi đè giữa các note khi bật cloud vẫn còn cho đến Phase 3 (bản hotfix Phase 0 chỉ giảm nhẹ). Vì vậy không nên phát hành riêng Phase 2 mà nên gộp với Phase 3.
+- Phase 2 không nên phát hành riêng: luồng đồng bộ v1 (một slot) chỉ được thay ở Phase 3.
 - Local "xoá vĩnh viễn" chưa báo cho server: note đó ở lại thùng rác server tới khi server tự purge sau 60 ngày.
 
 ### Lưu ý khi build (bẫy đã gặp)
@@ -158,3 +158,59 @@ Code: `app/store.py` (viết lại phần lưu note; giữ nguyên tên hàm đ�
 ### Chạy test
 
 `python -m unittest discover -s tests -t .` (Linux không màn hình: thêm `xvfb-run -a`; test dialog tự bỏ qua nếu không có display).
+
+## Phase 3: chi tiết đã làm (đồng bộ nhiều note)
+
+Code: `app/sync/repo.py` (mọi quyết định, không có mạng), `app/sync/engine.py` (luồng, request, sự kiện), `app/sync/client.py` (gọi `/v2/notes`), `app/store.py` (schema v2, lưu có kiểm tra), `app/notes_widget.py` (nối vào giao diện). Không đổi server.
+
+### Mô hình
+
+Mỗi note của tài khoản nhớ **cả hai phía**: bản trên máy (`content`, `dirty`, `deleted_at`, `position`) và bản server đã biết (`server_rev`, `base_content`, `server_deleted`, `server_position`). Việc cần đẩy lên được **suy ra từ chênh lệch** (`repo.next_op`) chứ không có hàng đợi riêng, nên mất điện giữa chừng chỉ là lần sau tính lại; mọi bước đều lặp lại được (`mutation_id` = hash nội dung + rev, server nhận ra yêu cầu trùng).
+
+Một chu kỳ (`SyncEngine.sync_once`): kéo thay đổi theo cursor → sao chép note local vào tài khoản (`copy_local_notes_to_account(skip_duplicates=True)`) → nhập note "một slot" cũ của bản v1 (một lần) → đẩy từng note. Lỗi ở một note không chặn các note khác. Chạy khi: sau khi lưu/xoá/đổi thứ tự (trễ 2 giây), mỗi 45 giây, và khi bấm "Đồng bộ ngay".
+
+### Khi server có bản mới hơn (`repo._apply_newer`)
+
+`base_content` là nội dung chung lần cuối hai bên thống nhất; so với nó để biết server **có thật sự đổi chữ** hay chỉ đổi trạng thái.
+
+| Máy này | Server | Kết quả |
+|---|---|---|
+| không sửa gì | đổi bất kỳ | nhận bản server |
+| sửa chữ | chữ giống hệt | nhận số revision, không xung đột |
+| sửa chữ | revision đổi nhưng chữ không đổi (xoá/khôi phục/đổi thứ tự ở nơi khác) | giữ bản sửa của mình, đẩy tiếp |
+| sửa chữ | **chữ khác** (kể cả khi server đã xoá note) | **bản của mình thành ghi chú mới `# [Xung đột] ...`**, note gốc nhận bản server |
+| sửa chữ | server xoá, chữ không đổi | sửa thắng xoá: note sống lại (đẩy bằng `restore`) |
+| xoá | server sửa chữ | sửa thắng xoá: note hiện lại với bản của server |
+| xoá | server chỉ đổi revision | giữ lệnh xoá |
+| bất kỳ | server đã purge | note chưa đẩy được giữ lại thành note mới; note sạch thì xoá cục bộ (để lại bản trong `backups/`) |
+
+Bản xung đột là ghi chú bình thường, có biểu ngữ ở đầu và tiêu đề `[Xung đột] ...` nên hiển thị đúng trên mọi thiết bị.
+
+### Ô soạn thảo
+
+Cơ sở dữ liệu là nguồn sự thật. Ô soạn thảo lưu bằng so-sánh-và-ghi (`save_note_by_id(..., expected_old=...)`): nếu chữ trong DB đã đổi kể từ lúc ô soạn thảo nạp (một lượt sync vừa áp bản từ máy khác), **chữ đang gõ không ghi đè mà thành bản sao xung đột**, ô soạn thảo hiện lại bản mới và có thông báo. Nếu chưa gõ gì thì bản mới từ máy khác được hiện ngay, giữ nguyên vị trí con trỏ. Nhấn phím mũi tên không gây ghi gì (so với `_editor_baseline`). Note đang mở bị xoá từ máy khác thì phần đang gõ được lưu vào note đó (nằm trong Thùng rác) rồi chuyển sang note khác.
+
+### Đăng nhập / đăng xuất
+
+Đăng nhập: giữ nguyên danh sách local, sync lần đầu kéo note của tài khoản, đưa note local lên (bỏ qua note trống, note mẫu chưa sửa, và note có chữ trùng hệt note đã có trên tài khoản), rồi mới chuyển sang danh sách tài khoản. Đăng xuất: quay về danh sách local; note của tài khoản vẫn nằm trên đĩa (ẩn) nên đăng nhập lại là có ngay. Note mẫu chưa sửa (`# Nmap` mặc định, `# Ghi chú mới`) không bao giờ được đẩy lên.
+
+### Giao diện
+
+Biểu tượng ☁ ở thanh tiêu đề (xanh: đã đồng bộ; xanh dương: đang chạy; vàng: ngoại tuyến hoặc còn thay đổi chưa gửi; đỏ: lỗi; ẩn khi chưa đăng nhập). Menu ba chấm hiện dòng trạng thái ("Đã đồng bộ lúc 14:02", số thay đổi còn chờ, hoặc lý do lỗi).
+
+### Kiểm thử
+
+- `tests/test_sync_repo.py`: từng nhánh của bảng quyết định (không cần mạng).
+- `tests/test_sync_engine.py`: **server thật** (uvicorn, DB SQLite tạm) với nhiều "thiết bị"; giả lập mất mạng, mất response, mất điện giữa chừng, server khôi phục từ backup cũ, note bị purge, hàng trăm note qua nhiều trang.
+- `FuzzTest`: 3 thiết bị làm việc ngẫu nhiên (tạo/sửa/xoá/khôi phục/đổi thứ tự/ngắt mạng/đồng bộ) rồi kiểm tra: **mọi chữ đã gõ còn nằm đâu đó trên server**, các thiết bị đồng nhất với server (nội dung, trạng thái xoá, thứ tự), và mọi note chưa lên server đều chỉ là chữ mẫu. Chạy dài hơn bằng `FUZZ_FIRST_SEED=200 FUZZ_SEEDS=40 FUZZ_STEPS=80`.
+- `tests/test_widget_sync.py`: widget thật dưới Xvfb (stub API Windows): sync áp lên ô soạn thảo sạch/đang gõ, note bị xoá từ máy khác, đăng nhập/đăng xuất, biểu tượng trạng thái.
+- Chạy đủ bằng một venv có yêu cầu của backend + `requests`, `Pillow`, `keyring`: `xvfb-run -a python -m unittest discover -s tests -t .` (thiếu phụ thuộc thì các test đó tự bỏ qua).
+
+Lỗi thật do FuzzTest tìm ra và đã sửa (đều là mất chữ): ghi đè bản của máy khác khi cả hai cùng sửa mà note đã bị xoá; chữ đã sửa nhưng note bị xoá rồi thì không bao giờ được đẩy lên; hai máy cùng sửa một note đã ở thùng rác thì máy sau ghi đè máy trước; note tạo rồi xoá khi chưa đồng bộ không lên server (thùng rác lệch nhau). Ngoài ra widget từng hiện lại **bản sao xung đột** thay vì note gốc ngay sau khi tạo bản sao.
+
+### Chưa làm / lưu ý khi phát hành
+
+- **Mọi thiết bị phải cập nhật.** Client 1.4.x vẫn ghi vào slot cũ; client mới chỉ nhập slot đó một lần khi đăng nhập lần đầu, nên sau đó không sync với client cũ nữa.
+- Chưa có: tự gộp 3-way theo dòng, dọn ảnh mồ côi, ảnh đặt ID theo hash, rate limit, chặn phiên bản cũ (Phase 4).
+- Xoá vĩnh viễn ở local vẫn chưa báo server (server tự purge sau 60 ngày).
+- Chưa chạy trên Windows thật: phần widget được kiểm qua Xvfb với stub `winfx`, chưa kiểm hành vi thanh tiêu đề/dock trên Windows.

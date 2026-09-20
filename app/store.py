@@ -23,10 +23,13 @@ DEFAULT_CONTENT = (
     "nmap -sn 192.168.1.0/24        # ping scan tim host song trong mang\n"
 )
 
+# Text the app itself puts in a note; never worth uploading until the user has changed it.
+PLACEHOLDER_CONTENTS = ("# Ghi chú mới", "# Ghi chú mới\n\nNội dung ghi chú...")
+
 BACKUP_KEEP = 200
 TRASH_RETENTION_DAYS = 60  # same as OneNote's recycle bin, and the server's purge window
 MAX_KEY_LEN = 24  # renumber a scope's positions before keys outgrow this (server cap is 64)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "kqnote.sqlite3"  # not notes.db: that name belonged to an even older layout
 
 
@@ -195,10 +198,13 @@ def _initialize(path):
         if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version == 0:
                     _create_schema(conn)
                     _import_initial_data(conn)
-                    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif version < SCHEMA_VERSION:
+                    _upgrade_schema(conn, version)
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -229,7 +235,9 @@ def _create_schema(conn):
             legacy_id   TEXT,                       -- id in the pre-SQLite layout, for traceability
             server_rev  INTEGER NOT NULL DEFAULT 0, -- sync: last server revision seen (0 = never synced)
             base_content TEXT,                      -- sync: content as of server_rev
-            dirty       INTEGER NOT NULL DEFAULT 0  -- sync: content changed since the last push
+            dirty       INTEGER NOT NULL DEFAULT 0, -- sync: content changed since the last push
+            server_deleted  INTEGER NOT NULL DEFAULT 0, -- sync: does the server have it in the trash
+            server_position TEXT                        -- sync: position the server has
         )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_scope ON notes(account_id, deleted_at, position)")
@@ -243,6 +251,25 @@ def _create_schema(conn):
             PRIMARY KEY (local_id, account_id)
         )"""
     )
+    _create_sync_state_table(conn)
+
+
+def _create_sync_state_table(conn):
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS sync_state (
+            account_id      TEXT PRIMARY KEY,
+            cursor          INTEGER NOT NULL DEFAULT 0,  -- last change-feed position applied
+            legacy_imported INTEGER NOT NULL DEFAULT 0,  -- the pre-multi-note cloud blob was looked at
+            last_sync_at    INTEGER
+        )"""
+    )
+
+
+def _upgrade_schema(conn, version):
+    if version < 2:
+        conn.execute("ALTER TABLE notes ADD COLUMN server_deleted INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE notes ADD COLUMN server_position TEXT")
+        _create_sync_state_table(conn)
 
 
 def _import_initial_data(conn):
@@ -290,10 +317,10 @@ def _kv_set(conn, key, value):
 
 # ------------------------------------------------------------------ positions
 
-def _renumber(conn):
-    """Give every live note in the scope a fresh, short, evenly spread position (keeping order)."""
+def _renumber(conn, account_id):
+    """Give every live note of the account a fresh, short, evenly spread position (keeping order)."""
     ids = [r[0] for r in conn.execute(
-        "SELECT id FROM notes WHERE account_id IS ? AND deleted_at IS NULL ORDER BY position, id", (_scope,))]
+        "SELECT id FROM notes WHERE account_id IS ? AND deleted_at IS NULL ORDER BY position, id", (account_id,))]
     keys = fracindex.n_keys_between(None, None, len(ids))
     conn.executemany("UPDATE notes SET position = ? WHERE id = ?", zip(keys, ids))
 
@@ -307,30 +334,51 @@ def _safe_key_between(a, b):
     return key if len(key) <= MAX_KEY_LEN else None
 
 
-def _put_on_top(conn, note_id):
-    """Position an existing row above every other live note in the scope."""
+def _put_on_top(conn, note_id, account_id):
+    """Position an existing row above every other live note of the account."""
     first = conn.execute(
         "SELECT position FROM notes WHERE account_id IS ? AND deleted_at IS NULL AND id != ?"
-        " ORDER BY position, id LIMIT 1", (_scope, note_id)).fetchone()
+        " ORDER BY position, id LIMIT 1", (account_id, note_id)).fetchone()
     key = _safe_key_between(None, first[0] if first else None)
     if key is None:
         conn.execute("UPDATE notes SET position = '' WHERE id = ?", (note_id,))  # '' sorts first
-        _renumber(conn)
+        _renumber(conn, account_id)
     else:
         conn.execute("UPDATE notes SET position = ? WHERE id = ?", (key, note_id))
 
 
-def _insert_note(conn, content, note_id=None):
+_CURRENT_SCOPE = object()
+
+
+def _insert_note(conn, content, note_id=None, account_id=_CURRENT_SCOPE):
+    """New note at the top of the account's list (default: the visible scope). Account notes
+    start dirty so the sync engine uploads them."""
+    if account_id is _CURRENT_SCOPE:
+        account_id = _scope
     now = int(time.time())
     note_id = note_id or str(uuid.uuid4())
     title, snippet = _extract_title_and_snippet(content)
     conn.execute(
         "INSERT INTO notes (id, account_id, content, title, snippet, position, created_at, updated_at, dirty)"
         " VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)",
-        (note_id, _scope, content, title, snippet, now, now, 1 if _scope else 0),
+        (note_id, account_id, content, title, snippet, now, now, 1 if account_id else 0),
     )
-    _put_on_top(conn, note_id)
+    _put_on_top(conn, note_id, account_id)
     return note_id
+
+
+def make_conflict_content(original_title, local_content, when=None):
+    """Body of a conflict copy: the user's own text under a banner that syncs to every device."""
+    stamp = time.strftime("%d/%m %H:%M", time.localtime(when if when is not None else time.time()))
+    return (f"# [Xung đột] {original_title}\n"
+            f"> Bản này là phần bạn đã sửa lúc {stamp} nhưng ghi chú gốc đã được cập nhật ở nơi khác. "
+            "Hãy gộp phần cần giữ vào ghi chú gốc rồi xoá bản này.\n\n"
+            f"{local_content}")
+
+
+def create_conflict_copy(conn, account_id, original_title, local_content):
+    """Keep `local_content` as a brand-new note instead of overwriting the original."""
+    return _insert_note(conn, make_conflict_content(original_title, local_content), account_id=account_id)
 
 
 def _single_moved(old, new):
@@ -356,25 +404,35 @@ def get_scope():
     return _scope
 
 
-def copy_local_notes_to_account(account_id):
+def copy_local_notes_to_account(account_id, skip_duplicates=False):
     """Copy the local-only notes into `account_id` as new notes (marked dirty so they
     get uploaded). The local originals stay, so logging out still shows them, and each
-    is copied at most once per account. Returns how many notes were copied."""
+    is copied at most once per account. With skip_duplicates, a note whose text the account
+    already has is not copied again (it is just remembered as handled), so first login on a
+    device that already synced elsewhere doesn't double every note. Returns how many
+    notes were copied."""
     copied = 0
     with _db(write=True) as conn:
+        existing = set()
+        if skip_duplicates:
+            existing = {r[0] for r in conn.execute("SELECT content FROM notes WHERE account_id = ?", (account_id,))}
         rows = conn.execute(
             "SELECT * FROM notes WHERE account_id IS NULL AND deleted_at IS NULL"
             " AND trim(content, ' ' || char(9) || char(10) || char(13)) != ''"
             " AND id NOT IN (SELECT local_id FROM adoptions WHERE account_id = ?)"
             " ORDER BY position, id", (account_id,)).fetchall()
+        placeholders = {c.strip() for c in PLACEHOLDER_CONTENTS} | {DEFAULT_CONTENT.strip()}
         for row in rows:
-            conn.execute(
-                "INSERT INTO notes (id, account_id, content, title, snippet, position, created_at, updated_at,"
-                " legacy_id, server_rev, dirty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
-                (str(uuid.uuid4()), account_id, row["content"], row["title"], row["snippet"],
-                 row["position"], row["created_at"], row["updated_at"], row["legacy_id"]))
+            if row["content"].strip() in placeholders:
+                continue  # untouched starter text: not adopted now, reconsidered if it gets edited
+            if row["content"] not in existing:
+                conn.execute(
+                    "INSERT INTO notes (id, account_id, content, title, snippet, position, created_at, updated_at,"
+                    " legacy_id, server_rev, dirty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
+                    (str(uuid.uuid4()), account_id, row["content"], row["title"], row["snippet"],
+                     row["position"], row["created_at"], row["updated_at"], row["legacy_id"]))
+                copied += 1
             conn.execute("INSERT INTO adoptions (local_id, account_id) VALUES (?, ?)", (row["id"], account_id))
-            copied += 1
     return copied
 
 
@@ -440,18 +498,30 @@ def load_note_by_id(note_id):
     return row[0] if row else ""
 
 
-def save_note_by_id(note_id, content):
+def save_note_by_id(note_id, content, expected_old=None):
+    """Store `content` for a note.
+
+    `expected_old` is what the caller believes is currently stored (the text it loaded).
+    If the stored text has since changed underneath it (a sync applied another device's
+    version), the caller's text is NOT written over it: it becomes a conflict copy, and the
+    copy's id is returned. Returns None when the save was a plain success.
+    """
     content = content or ""
     title, snippet = _extract_title_and_snippet(content)
     with _db(write=True) as conn:
-        row = conn.execute("SELECT content FROM notes WHERE id = ?", (note_id,)).fetchone()
+        row = conn.execute("SELECT content, title, account_id FROM notes WHERE id = ?", (note_id,)).fetchone()
         if row is None:
             _insert_note(conn, content, note_id)
-        elif row[0] != content:  # unchanged content must not look like an edit
-            conn.execute(
-                "UPDATE notes SET content = ?, title = ?, snippet = ?, updated_at = ?,"
-                " dirty = CASE WHEN account_id IS NULL THEN dirty ELSE 1 END WHERE id = ?",
-                (content, title, snippet, int(time.time()), note_id))
+            return None
+        if row["content"] == content:
+            return None  # unchanged content must not look like an edit
+        if expected_old is not None and row["content"] != expected_old:
+            return create_conflict_copy(conn, row["account_id"], row["title"], content)
+        conn.execute(
+            "UPDATE notes SET content = ?, title = ?, snippet = ?, updated_at = ?,"
+            " dirty = CASE WHEN account_id IS NULL THEN dirty ELSE 1 END WHERE id = ?",
+            (content, title, snippet, int(time.time()), note_id))
+    return None
 
 
 def create_note(content="# Ghi chú mới\n\nNội dung ghi chú..."):
@@ -477,6 +547,16 @@ def delete_note_by_id(note_id):
                 active = live[0]
         _kv_set(conn, "active_note_id", active)
     return active
+
+
+def ensure_note():
+    """Make sure the visible scope has at least one live note; returns the active note id."""
+    with _db(write=True) as conn:
+        live = conn.execute("SELECT id FROM notes WHERE account_id IS ? AND deleted_at IS NULL LIMIT 1",
+                            (_scope,)).fetchone()
+        if live is None:
+            _kv_set(conn, "active_note_id", _insert_note(conn, "# Ghi chú mới\n"))
+    return get_active_note_id()
 
 
 def load_content():
@@ -511,7 +591,7 @@ def restore_note(note_id):
         cur = conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL", (note_id,))
         if cur.rowcount != 1:
             return False
-        _put_on_top(conn, note_id)
+        _put_on_top(conn, note_id, _scope)
     return True
 
 

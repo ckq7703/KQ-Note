@@ -14,8 +14,7 @@ from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
 from app import ai_helper, markup, store
 from app.config import load_config, save_config
-from app.sync import state as sync_state
-from app.sync.engine import SyncEngine, content_hash
+from app.sync.engine import SyncEngine
 from app.theme import BG, BG_HEADER, BG_MENU, BORDER, FG_TEXT, FG_MUTED, FG_ACCENT, FG_TITLE_TAG, MATCH_BG, MATCH_CURRENT_BG, SELECT_BG
 from app.trash_dialog import TrashDialog
 from app import winfx
@@ -307,11 +306,18 @@ class NotesWidget(tk.Toplevel):
         self._match_idx = -1
         self._photo_refs = {}
         self._pending_images = set()
-        self.active_note_id = store.get_active_note_id()
+        self._db_content = None  # the stored text the editor was last loaded from / saved to
+        self._editor_baseline = None  # what the editor serialised to at that moment (to tell if the user typed)
+        self._sync_after_id = None
+        self._poll_after_id = None
 
         cfg = load_config()
         self._always_on_top = cfg.get("always_on_top", True)
         self.sync_engine = SyncEngine(cfg.get("sync_server_url"))
+        # Signed in: show the account's notes (already mirrored on disk); otherwise the local-only ones.
+        account = self.sync_engine.account_id() if self.sync_engine.is_logged_in() else None
+        store.set_scope(account)
+        self.active_note_id = store.ensure_note() if account else store.get_active_note_id()
 
         self.title("KQ Note")
         if os.path.exists(LOGO_PATH):
@@ -338,16 +344,10 @@ class NotesWidget(tk.Toplevel):
             self.after(10, lambda: self._apply_dock(docked_side))
 
         self._build()
+        self._load_content_into_editor(store.load_content())
         if self.sync_engine.is_logged_in():
-            # Resuming a session from a previous run: notes.cloud.txt already
-            # mirrors this account, refresh it with a normal (guarded) pull.
-            # A missing cache file reads as "", which would show an empty editor
-            # and let the next autosave overwrite the real note with blank text.
-            self._load_content_into_editor(store.load_cloud_cache() or store.load_content())
-            self.after(1000, self.sync_engine.pull_async)
-            self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
-        else:
-            self._load_content_into_editor(store.load_content())
+            self.after(1000, self.sync_engine.sync_async)
+            self._schedule_poll()
 
         self._update_cloud_icon()
         self.after(SYNC_EVENT_DRAIN_MS, self._drain_sync_events)
@@ -380,6 +380,12 @@ class NotesWidget(tk.Toplevel):
         self.menu_more_btn.bind("<Button-1>", self._show_header_dropdown_menu)
         self.menu_more_btn.bind("<Enter>", lambda e: self.menu_more_btn.config(bg=BG_MENU))
         self.menu_more_btn.bind("<Leave>", lambda e: self.menu_more_btn.config(bg=BG_HEADER))
+
+        # Sync status (a cloud glyph whose colour says how sync is doing; blank when signed out)
+        self.sync_status_lbl = tk.Label(header, text="", bg=BG_HEADER, fg=FG_MUTED,
+                                        font=("Segoe UI", 11), padx=0, pady=6, cursor="hand2")
+        self.sync_status_lbl.pack(side="right")
+        self.sync_status_lbl.bind("<Button-1>", self._show_header_dropdown_menu)
 
         # Main view containers
         self._setup_custom_scrollbar_style()
@@ -1160,6 +1166,7 @@ class NotesWidget(tk.Toplevel):
                 content = store.load_note_by_id(next_id)
                 self._load_content_into_editor(content)
             self._render_notes_list()
+            self._sync_soon()
 
     def _bind_card_drag(self, widget, card_info):
         if not widget:
@@ -1213,6 +1220,7 @@ class NotesWidget(tk.Toplevel):
                 if self._drag_data.get("moved"):
                     ordered_ids = [item["id"] for item in self._rendered_cards]
                     store.reorder_notes(ordered_ids)
+                    self._sync_soon()
                 self._drag_data = None
 
         widget.bind("<ButtonPress-1>", _on_drag_start, add="+")
@@ -1479,15 +1487,38 @@ class NotesWidget(tk.Toplevel):
         if not hasattr(self, "text"):
             return
         content = markup.serialize_from_text(self.text)
+        if content == self._editor_baseline:
+            # Nothing typed since the editor was loaded or last saved. (KeyRelease also fires for
+            # arrow keys etc., and the stored text may have been updated by a sync meanwhile:
+            # writing the editor's older text back would undo that.)
+            return
         active_id = getattr(self, "active_note_id", None) or store.get_active_note_id()
+        copy_id = None
         if active_id:
-            store.save_note_by_id(active_id, content)
+            copy_id = store.save_note_by_id(active_id, content, expected_old=self._db_content)
         else:
             store.save_content(content)
+        if copy_id:
+            self._on_edit_conflicted(copy_id)
+            return
+        self._db_content = content
+        self._editor_baseline = content
+        self._sync_soon()
 
-        if self.sync_engine.is_logged_in():
-            store.save_cloud_cache(content)
-            self.sync_engine.push_async(content)
+    def _on_edit_conflicted(self, copy_id):
+        """The stored text changed under the editor (a sync applied another device's version):
+        the store kept what was typed as a new note instead of overwriting."""
+        self._reload_active_note()
+        if self.list_view_frame.winfo_viewable():
+            self._render_notes_list()
+        messagebox.showinfo(
+            "Ghi chú vừa được cập nhật từ thiết bị khác",
+            "Ghi chú này vừa thay đổi ở nơi khác trong lúc bạn đang gõ.\n\n"
+            "Phần bạn vừa gõ không bị mất: nó được lưu thành một ghi chú mới có tiêu đề bắt đầu bằng "
+            "[Xung đột]. Hãy gộp phần cần giữ vào ghi chú gốc rồi xoá bản xung đột.",
+            parent=self,
+        )
+        self._sync_soon()
 
     def _load_content_into_editor(self, content):
         self._photo_refs.clear()
@@ -1499,6 +1530,34 @@ class NotesWidget(tk.Toplevel):
         self._highlight_urls()
         if self._pending_images:
             self.after(IMAGE_CHECK_INTERVAL_MS, self._check_lazy_images)
+        self._db_content = content
+        self._editor_baseline = markup.serialize_from_text(self.text)
+
+    def _editor_is_clean(self):
+        return markup.serialize_from_text(self.text) == self._editor_baseline
+
+    def _reload_active_note(self):
+        """Show the stored text of the active note again, keeping the cursor and scroll position."""
+        # Stay on the note that is open if it still exists; only then fall back to another one.
+        # (Recomputing "the active note" would pick whatever is first in the list, and a conflict
+        # copy has just been inserted there.)
+        note_id = self.active_note_id
+        if note_id not in {n["id"] for n in store.list_notes()}:
+            note_id = store.get_active_note_id() or store.ensure_note()
+        store.set_active_note_id(note_id)
+        self.active_note_id = note_id
+        try:
+            cursor, top = self.text.index("insert"), self.text.yview()[0]
+        except tk.TclError:
+            cursor, top = None, None
+        self._load_content_into_editor(store.load_note_by_id(note_id))
+        try:
+            if cursor:
+                self.text.mark_set("insert", cursor)
+            if top is not None:
+                self.text.yview_moveto(top)
+        except tk.TclError:
+            pass
 
     # ---------- cloud sync ----------
     def _load_square_photo(self, path, size):
@@ -1532,6 +1591,7 @@ class NotesWidget(tk.Toplevel):
         if self.sync_engine.is_logged_in():
             email = self.sync_engine.account_email() or "Tài khoản"
             items.append((f"👤  {email}", None))
+            items.append((self._sync_status_text(), None))
             items.append(("🔄  Đồng bộ ngầm ngay", self._sync_now))
             items.append(("🚪  Đăng xuất khỏi Cloud", self._logout))
         else:
@@ -1549,9 +1609,35 @@ class NotesWidget(tk.Toplevel):
         # Restoring puts a note back in the list; refresh it if the list is what's showing.
         if self.list_view_frame.winfo_viewable():
             self._render_notes_list()
+        self._sync_soon()
+
+    _SYNC_COLORS = {"synced": "#6fd0a0", "syncing": FG_ACCENT, "offline": "#d9a441", "error": "#e5706b"}
+
+    def _sync_status_text(self):
+        st = self.sync_engine.status()
+        pending = st.get("pending") or 0
+        tail = f" · còn {pending} thay đổi chưa gửi" if pending else ""
+        if st["state"] == "syncing":
+            return "⏳  Đang đồng bộ…"
+        if st["state"] == "offline":
+            return "📴  Ngoại tuyến, sẽ đồng bộ khi có mạng" + tail
+        if st["state"] == "error":
+            return f"⚠️  Lỗi đồng bộ: {st['message']}"[:90] + tail
+        if st.get("last_ok"):
+            return "✅  Đã đồng bộ lúc " + datetime.datetime.fromtimestamp(st["last_ok"]).strftime("%H:%M") + tail
+        return "☁️  Chưa đồng bộ"
 
     def _update_cloud_icon(self):
-        pass
+        if not hasattr(self, "sync_status_lbl"):
+            return
+        if not self.sync_engine.is_logged_in():
+            self.sync_status_lbl.config(text="", padx=0)
+            return
+        st = self.sync_engine.status()
+        state = st["state"]
+        if state == "synced" and st.get("pending"):
+            state = "offline"  # something is still waiting to go up
+        self.sync_status_lbl.config(text="☁", padx=6, fg=self._SYNC_COLORS.get(state, FG_MUTED))
 
     def _on_cloud_click(self, event):
         if not self.sync_engine.is_logged_in():
@@ -1561,63 +1647,109 @@ class NotesWidget(tk.Toplevel):
         email = self.sync_engine.account_email() or "?"
         menu = ContextMenu(self, [
             (f"Đã đăng nhập: {email}", None),
+            (self._sync_status_text(), None),
             ("Đồng bộ ngay", self._sync_now),
             None,
             ("Đăng xuất", self._logout),
         ])
         menu.popup(event.x_root, event.y_root)
 
-    def _on_login_success(self):
-        self._update_cloud_icon()
-        # Always fetch this account's cloud content on login rather than pushing
-        # anything first — the local-only note and the account's note are
-        # separate documents, so login must never push local content into it.
-        self.sync_engine.pull_async(initial=True)
-        self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
-
-    def _sync_now(self):
-        self.sync_engine.pull_async()
-        self.sync_engine.push_async(markup.serialize_from_text(self.text))
-
-    def _logout(self):
-        self.sync_engine.logout()
-        # Local-only note and cloud-account note live in separate files, so
-        # logging out just switches the editor back to notes.txt untouched —
-        # nothing to merge or lose.
-        self._load_content_into_editor(store.load_content())
-        self._update_cloud_icon()
-
-    def _poll_sync(self):
+    # -- when to sync: after local changes (debounced), on a timer, and on demand
+    def _sync_soon(self, delay_ms=2000):
         if not self.sync_engine.is_logged_in():
             return
-        self.sync_engine.pull_async()
-        self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
+        if self._sync_after_id is not None:
+            self.after_cancel(self._sync_after_id)
+        self._sync_after_id = self.after(delay_ms, self._run_sync)
 
-    def _apply_remote_update(self, result):
-        local_content = markup.serialize_from_text(self.text)
-        st = sync_state.load_state()
-        if content_hash(local_content) != st.get("last_synced_hash"):
-            return  # local has unsynced edits; let the next push reconcile instead of clobbering
-        if local_content != result["content"]:
-            store.backup_note_content(self.active_note_id, local_content, "pre-cloud-pull")
-        self._load_content_into_editor(result["content"])
-        store.save_content(result["content"])
-        store.save_cloud_cache(result["content"])
-        sync_state.update_after_sync(result["version"], content_hash(result["content"]))
+    def _run_sync(self):
+        self._sync_after_id = None
+        self.sync_engine.sync_async()
+
+    def _schedule_poll(self):
+        if self._poll_after_id is not None:
+            self.after_cancel(self._poll_after_id)
+        self._poll_after_id = self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
+
+    def _poll_sync(self):
+        self._poll_after_id = None
+        if not self.sync_engine.is_logged_in():
+            return
+        self.sync_engine.sync_async()
+        self._schedule_poll()
+
+    def _sync_now(self):
+        self.flush_save()
+        self.sync_engine.sync_async()
+
+    # -- account
+    def _on_login_success(self):
+        self.flush_save()  # persist anything typed into the local note before the account takes over
+        self._update_cloud_icon()
+        self.sync_engine.sync_async()  # the account's notes are shown once its first sync has pulled them
+        self._schedule_poll()
+
+    def _on_account_ready(self, account):
+        """The first pull of this session finished and the local notes were copied into the account."""
+        if store.get_scope() == account:
+            return  # already showing it (app restarted while signed in)
+        self.flush_save()
+        store.set_scope(account)
+        store.ensure_note()
+        self._reload_active_note()
+        if self.list_view_frame.winfo_viewable():
+            self._render_notes_list()
         self._update_cloud_icon()
 
-    def _apply_initial_pull(self, result):
-        # Logging in always shows this account's cloud content, even if that's
-        # empty for a brand-new account — it's a separate "document" from the
-        # local-only note, never auto-merged or auto-pushed into.
-        local_content = markup.serialize_from_text(self.text)
-        if local_content != result["content"]:
-            store.backup_note_content(self.active_note_id, local_content, "pre-cloud-login")
-        self._load_content_into_editor(result["content"])
-        store.save_content(result["content"])
-        store.save_cloud_cache(result["content"])
-        sync_state.update_after_sync(result["version"], content_hash(result["content"]))
+    def _logout(self):
+        self.flush_save()
+        if self._sync_after_id is not None:
+            self.after_cancel(self._sync_after_id)
+            self._sync_after_id = None
+        self.sync_engine.logout()
+        # The account's notes stay on disk (hidden) so signing back in is instant;
+        # what shows now is the local-only list, untouched by anything the account did.
+        store.set_scope(None)
+        self._reload_active_note()
+        if self.list_view_frame.winfo_viewable():
+            self._render_notes_list()
         self._update_cloud_icon()
+
+    # -- reacting to what the sync engine changed in the database
+    def _on_notes_changed(self, payload):
+        changed = set(payload.get("changed", []))
+        if self.list_view_frame.winfo_viewable():
+            self._render_notes_list()
+
+        active = self.active_note_id
+        if active not in {n["id"] for n in store.list_notes()}:
+            # The open note was deleted (or replaced) from another device. Keep whatever was being
+            # typed (it lands in that note, which is in the trash), then show a note that still exists.
+            self.flush_save()
+            self.active_note_id = store.get_active_note_id() or store.ensure_note()
+            self._reload_active_note()
+            if self.detail_view_frame.winfo_viewable():
+                messagebox.showinfo(
+                    "Ghi chú đã thay đổi",
+                    "Ghi chú đang mở vừa bị xoá hoặc thay thế từ một thiết bị khác.\n"
+                    "Nếu bạn vừa gõ dở, phần đó vẫn nằm trong Thùng rác.",
+                    parent=self,
+                )
+        elif active in changed and self._editor_is_clean():
+            self._reload_active_note()  # nothing typed here: just show the newer text
+        # If the user is mid-typing on the changed note, do nothing now: the next autosave
+        # notices the stored text moved and keeps the typing as a conflict copy.
+
+        conflicts = payload.get("conflicts") or []
+        if conflicts:
+            titles = "\n".join(f"• {c['title']}" for c in conflicts[:5])
+            messagebox.showinfo(
+                "Ghi chú bị sửa ở hai nơi cùng lúc",
+                f"{len(conflicts)} ghi chú được sửa ở nhiều thiết bị cùng lúc:\n{titles}\n\n"
+                "Phần bạn sửa ở máy này được giữ thành ghi chú mới có tiêu đề bắt đầu bằng [Xung đột]. "
+                "Hãy gộp phần cần giữ vào ghi chú gốc rồi xoá bản xung đột.",
+                parent=self,
+            )
 
     def _drain_sync_events(self):
         while True:
@@ -1625,10 +1757,12 @@ class NotesWidget(tk.Toplevel):
                 kind, payload = self.sync_engine.events.get_nowait()
             except queue.Empty:
                 break
-            if kind == "remote_update":
-                self._apply_remote_update(payload)
-            elif kind == "initial_pull":
-                self._apply_initial_pull(payload)
+            if kind == "notes_changed":
+                self._on_notes_changed(payload)
+            elif kind == "account_ready":
+                self._on_account_ready(payload)
+            elif kind == "sync_status":
+                self._update_cloud_icon()
             elif kind == "google_login_success":
                 self._on_login_success()
             elif kind == "google_login_error":
@@ -1638,16 +1772,13 @@ class NotesWidget(tk.Toplevel):
                     payload or "Không rõ nguyên nhân. Vui lòng thử lại.",
                     parent=self,
                 )
-            elif kind == "synced":
-                self._update_cloud_icon()
-            elif kind == "conflict_resolved":
-                self._update_cloud_icon()
             elif kind == "auth_required":
                 # Refresh also failed — the session is unrecoverable, so fall
                 # back to a clean logged-out state instead of a stuck icon.
                 self._logout()
-            elif kind == "error":
-                self._update_cloud_icon()
+                messagebox.showinfo("Phiên đăng nhập đã hết hạn",
+                                    "Vui lòng đăng nhập lại để tiếp tục đồng bộ. Ghi chú của bạn vẫn được giữ.",
+                                    parent=self)
         self.after(SYNC_EVENT_DRAIN_MS, self._drain_sync_events)
 
     # ---------- inline formatting (bold / italic / code) ----------

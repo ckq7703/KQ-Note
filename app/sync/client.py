@@ -15,12 +15,20 @@ class OfflineError(SyncError):
     """Network unreachable. Expected in local-first operation; caller should stay quiet."""
 
 
-class SyncConflict(SyncError):
-    def __init__(self, content, version, updated_at):
-        super().__init__("Version conflict")
-        self.content = content
-        self.version = version
-        self.updated_at = updated_at
+class RevConflict(SyncError):
+    """409: the server's copy moved on. `note` is the server's current version of it."""
+
+    def __init__(self, note):
+        super().__init__("Note changed on the server")
+        self.note = note
+
+
+class CursorExpired(SyncError):
+    """410: the change-feed cursor is no longer valid; start again from 0."""
+
+
+class NoteNotFound(SyncError):
+    """404: the server has no such note."""
 
 
 def _error_message(resp):
@@ -122,24 +130,49 @@ class SyncClient:
             raise SyncError(_error_message(resp))
         return resp.json()  # {"email": ..., "avatar_url": ...}
 
-    def get_note(self):
+    def get_legacy_note(self):
+        """The pre-multi-note single cloud blob (read only: nothing writes to it any more)."""
         resp = self._request("GET", "/notes/me")
         if resp.status_code != 200:
             raise SyncError(_error_message(resp))
         return resp.json()
 
-    def put_note(self, content, base_version, device_id):
-        resp = self._request(
-            "PUT",
-            "/notes/me",
-            json={"content": content, "base_version": base_version, "device_id": device_id},
-        )
+    # ---- multi-note (v2) ----
+    def _note_response(self, resp):
         if resp.status_code == 409:
-            data = resp.json()["detail"]
-            raise SyncConflict(data["content"], data["version"], data["updated_at"])
+            raise RevConflict(resp.json()["detail"]["note"])
+        if resp.status_code == 404:
+            raise NoteNotFound(_error_message(resp))
         if resp.status_code != 200:
             raise SyncError(_error_message(resp))
         return resp.json()
+
+    def changes(self, cursor, limit=200):
+        resp = self._request("GET", "/v2/notes/changes", params={"cursor": cursor, "limit": limit})
+        if resp.status_code == 410:
+            raise CursorExpired("cursor_expired")
+        if resp.status_code != 200:
+            raise SyncError(_error_message(resp))
+        return resp.json()  # {"changes": [...], "cursor": int, "has_more": bool}
+
+    def put_note(self, note_id, content, base_rev, device_id, mutation_id, position, restore=False):
+        return self._note_response(self._request(
+            "PUT", f"/v2/notes/{note_id}",
+            json={"content": content, "base_rev": base_rev, "device_id": device_id,
+                  "mutation_id": mutation_id, "position": position, "restore": restore}))
+
+    def trash_note(self, note_id, base_rev, device_id, mutation_id):
+        return self._note_response(self._request(
+            "POST", f"/v2/notes/{note_id}/trash",
+            json={"base_rev": base_rev, "device_id": device_id, "mutation_id": mutation_id}))
+
+    def restore_note(self, note_id, base_rev, device_id, mutation_id):
+        return self._note_response(self._request(
+            "POST", f"/v2/notes/{note_id}/restore",
+            json={"base_rev": base_rev, "device_id": device_id, "mutation_id": mutation_id}))
+
+    def move_note(self, note_id, position):
+        return self._note_response(self._request("PATCH", f"/v2/notes/{note_id}", json={"position": position}))
 
     def fetch_image_manifest(self):
         resp = self._request("GET", "/images/manifest")
