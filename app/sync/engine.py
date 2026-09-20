@@ -176,23 +176,35 @@ class SyncEngine:
                 self.events.put(("account_ready", account))
             self._flush_events(events)
             failures, last_error = self._push(account, events)
+            purge_failures, purge_error = self._push_purges(account, events)
+            failures, last_error = failures + purge_failures, last_error or purge_error
             repo.set_state(account, last_sync_at=int(time.time()))
-            pending = len(repo.push_candidates(account))
+            pending = self._pending_count()
             if failures:
                 self._set_status("error", last_error, pending=pending)
             else:
                 self._set_status("synced", "", last_ok=int(time.time()), pending=pending)
         except OfflineError:
-            self._set_status("offline", "Không có kết nối tới máy chủ")
+            self._set_status("offline", "Không có kết nối tới máy chủ", pending=self._pending_count())
         except AuthRequiredError:
             self.events.put(("auth_required", None))
             self._set_status("off")
         except SyncError as e:
-            self._set_status("error", str(e))
+            self._set_status("error", str(e), pending=self._pending_count())
         except Exception as e:  # never let the daemon thread die silently
-            self._set_status("error", f"Lỗi không xác định khi đồng bộ: {e}")
+            self._set_status("error", f"Lỗi không xác định khi đồng bộ: {e}", pending=self._pending_count())
         finally:
             self._flush_events(events)
+
+    def _pending_count(self):
+        """How much is still waiting to go to the server (0 if that can't be worked out)."""
+        account = self.account_id()
+        if not account:
+            return 0
+        try:
+            return len(repo.push_candidates(account)) + len(repo.pending_purges(account))
+        except Exception:  # noqa: BLE001  (a status detail must never break the cycle's error handling)
+            return 0
 
     def _ensure_account(self):
         account = self.account_id()
@@ -284,6 +296,35 @@ class SyncEngine:
                 events.extend(repo.apply_page(account, [conflict.note], None))
             except NoteNotFound:
                 repo.reset_unsynced(note_id)  # the server lost it: upload it again as new
+
+    def _push_purges(self, account, events):
+        failures, last_error = 0, ""
+        for pending in repo.pending_purges(account):
+            try:
+                self._do_purge(account, pending, events)
+            except (OfflineError, AuthRequiredError):
+                raise
+            except SyncError as e:
+                failures += 1
+                last_error = str(e)
+        return failures, last_error
+
+    def _do_purge(self, account, pending, events):
+        """Tell the server about a "delete forever". A note changed by another device since this
+        one last saw it is never destroyed: their version comes back instead."""
+        note_id, rev = pending["note_id"], pending["base_rev"]
+        try:
+            if not pending["server_deleted"]:
+                rev = self.client.trash_note(note_id, rev, self.device_id, f"t.{rev}")["rev"]  # only trash can be purged
+            self.client.purge_note(note_id, rev, self.device_id, f"p.{rev}")
+        except NoteNotFound:
+            pass  # the server no longer has it: nothing to purge
+        except RevConflict as conflict:
+            repo.clear_pending_purge(account, note_id)  # first, or the note would be ignored as "being deleted"
+            if not conflict.note["purged"]:
+                events.extend(repo.apply_page(account, [conflict.note], None))
+            return
+        repo.clear_pending_purge(account, note_id)
 
     def _do_op(self, row, op):
         note_id, rev = row["id"], row["server_rev"]

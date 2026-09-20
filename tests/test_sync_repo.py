@@ -370,6 +370,30 @@ class FullPassTest(RepoCase):
         self.assertEqual(self.row(nid)["content"], "only here")
 
 
+class PendingPurgeRepoTest(RepoCase):
+    def test_a_note_being_deleted_for_good_is_not_brought_back_by_a_pull(self):
+        self.synced_note("n1", "bye", 2)
+        self.store.set_scope(ACCT)
+        self.sql("UPDATE notes SET deleted_at = 5 WHERE id = 'n1'")
+        self.store.purge_note("n1")
+        self.store.set_scope(None)
+        self.assertEqual(len(repo.pending_purges(ACCT)), 1)
+
+        self.pull(remote("n1", 3, "bye", deleted=True))  # the echo of our own trash call
+
+        self.assertIsNone(self.row("n1"))
+
+    def test_once_the_request_is_cleared_a_newer_server_version_is_accepted_again(self):
+        self.synced_note("n1", "bye", 2)
+        self.store.set_scope(ACCT)
+        self.sql("UPDATE notes SET deleted_at = 5 WHERE id = 'n1'")
+        self.store.purge_note("n1")
+        self.store.set_scope(None)
+        repo.clear_pending_purge(ACCT, "n1")
+        self.pull(remote("n1", 5, "edited by someone else"))
+        self.assertEqual(self.row("n1")["content"], "edited by someone else")
+
+
 class LegacySlotTest(RepoCase):
     def test_imports_the_old_blob_unless_the_account_already_has_that_text(self):
         self.pull(remote("n1", 1, "COMMON COMMANDS\nls"))

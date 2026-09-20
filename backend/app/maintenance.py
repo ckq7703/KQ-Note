@@ -13,7 +13,7 @@ from sqlalchemy import and_, delete, func, select, update
 from .config import settings
 from .database import SessionLocal
 from .models import Note, NoteRevision, UserSync
-from .note_service import aware, next_seq, utcnow
+from .note_service import apply_purge, aware, next_seq, utcnow
 
 log = logging.getLogger("kqnote.maintenance")
 
@@ -39,12 +39,7 @@ def purge_expired_trash(db, now=None) -> int:
         ):
             db.rollback()  # changed under us (restored/edited): leave it alone
             continue
-        db.execute(delete(NoteRevision).where(NoteRevision.user_id == user_id, NoteRevision.note_id == note_id))
-        note.content = ""
-        note.title = ""
-        note.purged_at = now
-        note.rev += 1
-        note.seq = seq
+        apply_purge(db, note, seq, now)
         db.commit()
         purged += 1
     return purged

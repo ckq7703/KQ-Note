@@ -66,6 +66,17 @@ def restore_note(
     return svc.to_out(svc.set_trashed(db, user, note_id, False, payload))
 
 
+@router.post("/{note_id}/purge", response_model=NoteV2)
+def purge_note(
+    note_id: str,
+    payload: NoteTransition,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a trashed note for good ("delete forever"). 409 unless it is in the trash at base_rev."""
+    return svc.to_out(svc.purge_note(db, user, note_id, payload))
+
+
 @router.patch("/{note_id}", response_model=NoteV2)
 def move_note(
     note_id: str,

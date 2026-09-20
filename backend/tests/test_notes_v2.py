@@ -131,6 +131,60 @@ def test_trash_is_idempotent(a):
     assert again.status_code == 200 and again.json()["rev"] == 2
 
 
+# ------------------------------------------------------------ purge ("delete forever")
+
+def purge(a, nid, base_rev, **kw):
+    return a.c.post(f"/v2/notes/{nid}/purge", headers=a.h, json={"base_rev": base_rev, **kw})
+
+
+def test_purge_a_trashed_note_drops_content_and_history_at_once(a):
+    nid, _ = a.create("secret text " * 30)
+    a.put(nid, "tiny", base_rev=1)  # leaves a history snapshot
+    a.trash(nid, base_rev=2)
+    before = a.get(nid).json()
+
+    r = purge(a, nid, before["rev"])
+
+    assert r.status_code == 200
+    n = r.json()
+    assert n["purged"] and n["content"] == "" and n["title"] == ""
+    assert n["rev"] == before["rev"] + 1 and n["seq"] > before["seq"]
+    assert a.revisions(nid).json() == []
+    assert a.changes(before["seq"]).json()["changes"][0]["purged"] is True
+    assert a.put(nid, "zombie", base_rev=n["rev"]).status_code == 409
+
+
+def test_a_live_note_cannot_be_purged(a):
+    nid, _ = a.create("keep me")
+    assert purge(a, nid, 1).status_code == 409
+    assert a.get(nid).json()["content"] == "keep me"
+
+
+def test_purge_from_a_stale_revision_is_refused(a):
+    nid, _ = a.create("v1")
+    a.trash(nid, base_rev=1)
+    a.restore(nid, base_rev=2)  # someone brought it back
+    a.trash(nid, base_rev=3)
+    assert purge(a, nid, 2).status_code == 409  # this device only saw rev 2
+    assert a.get(nid).json()["content"] == "v1"
+
+
+def test_purge_is_idempotent_and_404_for_unknown_notes(a):
+    nid, _ = a.create("x")
+    a.trash(nid, base_rev=1)
+    assert purge(a, nid, 2, mutation_id="p1").status_code == 200
+    again = purge(a, nid, 2, mutation_id="p1")
+    assert again.status_code == 200 and again.json()["purged"] and again.json()["rev"] == 3
+    assert purge(a, new_id(), 1).status_code == 404
+
+
+def test_users_cannot_purge_each_others_notes(a, b):
+    nid, _ = a.create("alice's")
+    a.trash(nid, base_rev=1)
+    assert purge(b, nid, 2).status_code == 404
+    assert a.get(nid).json()["purged"] is False
+
+
 # ------------------------------------------------------------ delta feed
 
 def test_changes_paging_has_no_gaps_or_duplicates(a):

@@ -436,7 +436,81 @@ class SchemaUpgradeTest(StoreCase):
         row = self.sql("SELECT server_deleted, server_position FROM notes WHERE id = 'n1'")[0]
         self.assertEqual((row[0], row[1]), (0, None))
         self.assertEqual(self.sql("SELECT count(*) FROM sync_state")[0][0], 0)  # the table exists
+        self.assertEqual(self.sql("SELECT count(*) FROM pending_purges")[0][0], 0)
         self.assertEqual(self.sql("PRAGMA user_version")[0][0], self.store.SCHEMA_VERSION)
+
+
+class SchemaV2UpgradeTest(StoreCase):
+    def test_a_version_2_database_gains_the_pending_purges_table(self):
+        conn = sqlite3.connect(self.store.get_db_path())
+        for statement in SchemaUpgradeTest.V1_SCHEMA:
+            conn.execute(statement)
+        conn.execute("ALTER TABLE notes ADD COLUMN server_deleted INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE notes ADD COLUMN server_position TEXT")
+        conn.execute("CREATE TABLE sync_state (account_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0,"
+                     " legacy_imported INTEGER NOT NULL DEFAULT 0, last_sync_at INTEGER)")
+        conn.execute("INSERT INTO notes (id, content, position, created_at, updated_at) VALUES ('n1', 'kept', 'V', 1, 2)")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+        self.restart()
+        self.store.initialize()
+
+        self.assertEqual(self.store.load_note_by_id("n1"), "kept")
+        self.assertEqual(self.sql("SELECT count(*) FROM pending_purges")[0][0], 0)
+        self.assertEqual(self.sql("PRAGMA user_version")[0][0], 3)
+
+
+class PendingPurgeTest(StoreCase):
+    def synced_account_note(self, server_deleted=0, server_rev=4):
+        self.store.set_scope("acct-1")
+        nid = self.store.create_note("# synced note")
+        self.sql("UPDATE notes SET server_rev = ?, server_deleted = ?, dirty = 0 WHERE id = ?", (server_rev, server_deleted, nid))
+        self.store.delete_note_by_id(nid)
+        return nid
+
+    def pending(self):
+        return [tuple(r) for r in self.sql("SELECT account_id, note_id, base_rev, server_deleted FROM pending_purges")]
+
+    def test_deleting_forever_a_note_the_server_knows_is_remembered(self):
+        nid = self.synced_account_note(server_deleted=0, server_rev=4)
+        self.assertTrue(self.store.purge_note(nid))
+        self.assertEqual(self.pending(), [("acct-1", nid, 4, 0)])
+
+    def test_the_servers_trash_state_is_remembered_too(self):
+        nid = self.synced_account_note(server_deleted=1, server_rev=6)
+        self.store.purge_note(nid)
+        self.assertEqual(self.pending(), [("acct-1", nid, 6, 1)])
+
+    def test_notes_the_server_never_saw_need_no_server_call(self):
+        self.store.set_scope("acct-1")
+        nid = self.store.create_note("# never synced")
+        self.store.delete_note_by_id(nid)
+        self.store.purge_note(nid)
+        self.assertEqual(self.pending(), [])
+
+    def test_local_only_notes_need_no_server_call(self):
+        nid = self.store.create_note("# local")
+        self.store.delete_note_by_id(nid)
+        self.store.purge_note(nid)
+        self.assertEqual(self.pending(), [])
+
+    def test_empty_trash_remembers_every_synced_note(self):
+        a, b = self.synced_account_note(server_rev=2), self.synced_account_note(server_rev=3)
+        self.store.empty_trash()
+        self.assertEqual(sorted(p[1] for p in self.pending()), sorted([a, b]))
+
+    def test_the_automatic_60_day_expiry_leaves_the_server_to_do_its_own_purge(self):
+        nid = self.synced_account_note()
+        self.sql("UPDATE notes SET deleted_at = 1 WHERE id = ?", (nid,))
+        self.assertEqual(self.store.purge_expired_trash(), 1)
+        self.assertEqual(self.pending(), [])
+
+    def test_a_disk_copy_is_still_kept(self):
+        nid = self.synced_account_note()
+        self.store.purge_note(nid)
+        self.assertTrue([f for f in os.listdir(self.store.get_backups_dir()) if ".purged" in f])
 
 
 class CompareAndSaveTest(StoreCase):

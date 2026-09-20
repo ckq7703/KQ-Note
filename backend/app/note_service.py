@@ -224,6 +224,39 @@ def set_trashed(db: Session, user: User, note_id: str, trashed: bool, payload: N
     return db.get(Note, (user.id, note_id), populate_existing=True)
 
 
+def apply_purge(db: Session, note: Note, seq: int, now: datetime, device_id: str | None = None) -> None:
+    """Drop a trashed note's content for good (row kept as a tombstone). Caller commits."""
+    db.execute(delete(NoteRevision).where(NoteRevision.user_id == note.user_id, NoteRevision.note_id == note.id))
+    note.content = ""
+    note.title = ""
+    note.purged_at = now
+    note.rev += 1
+    note.seq = seq
+    if device_id is not None:
+        note.updated_by_device = device_id
+
+
+def purge_note(db: Session, user: User, note_id: str, payload: NoteTransition) -> Note:
+    """The user chose "delete forever". Only a trashed note can be purged, and only from the
+    revision the caller saw (so a note edited or restored meanwhile is never destroyed)."""
+    note_id = normalize_note_id(note_id)
+    now = utcnow()
+    seq = next_seq(db, user.id)
+    note = _load_locked(db, user.id, note_id)
+    if note is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Note not found")
+    if note.purged_at is not None:
+        return _finish_noop(db, user.id, note_id)  # already gone: purging again is a no-op
+    if payload.mutation_id and note.last_mutation_id == payload.mutation_id:
+        return _finish_noop(db, user.id, note_id)
+    if note.deleted_at is None or payload.base_rev != note.rev:
+        raise _conflict(note)
+    apply_purge(db, note, seq, now, payload.device_id)
+    note.last_mutation_id = payload.mutation_id
+    db.commit()
+    return db.get(Note, (user.id, note_id), populate_existing=True)
+
+
 def set_position(db: Session, user: User, note_id: str, position: str) -> Note:
     """Reordering is last-write-wins and never touches content or rev."""
     note_id = normalize_note_id(note_id)

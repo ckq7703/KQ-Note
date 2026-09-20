@@ -30,7 +30,7 @@ PLACEHOLDER_CONTENTS = ("# Ghi chú mới", "# Ghi chú mới\n\nNội dung ghi 
 BACKUP_KEEP = 200
 TRASH_RETENTION_DAYS = 60  # same as OneNote's recycle bin, and the server's purge window
 MAX_KEY_LEN = 24  # renumber a scope's positions before keys outgrow this (server cap is 64)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DB_FILENAME = "kqnote.sqlite3"  # not notes.db: that name belonged to an even older layout
 
 
@@ -253,6 +253,20 @@ def _create_schema(conn):
         )"""
     )
     _create_sync_state_table(conn)
+    _create_pending_purges_table(conn)
+
+
+def _create_pending_purges_table(conn):
+    # "Delete forever" done here that the server still has to be told about.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pending_purges (
+            account_id     TEXT NOT NULL,
+            note_id        TEXT NOT NULL,
+            base_rev       INTEGER NOT NULL,           -- the server revision this device last saw
+            server_deleted INTEGER NOT NULL DEFAULT 0, -- whether the server already has it in its trash
+            PRIMARY KEY (account_id, note_id)
+        )"""
+    )
 
 
 def _create_sync_state_table(conn):
@@ -271,6 +285,8 @@ def _upgrade_schema(conn, version):
         conn.execute("ALTER TABLE notes ADD COLUMN server_deleted INTEGER NOT NULL DEFAULT 0")
         conn.execute("ALTER TABLE notes ADD COLUMN server_position TEXT")
         _create_sync_state_table(conn)
+    if version < 3:
+        _create_pending_purges_table(conn)
 
 
 def _import_initial_data(conn):
@@ -615,9 +631,16 @@ def restore_note(note_id):
     return True
 
 
-def _purge_rows(conn, rows):
+def _purge_rows(conn, rows, record=False):
+    """Delete notes for good, leaving a copy in backups/. With record=True (the user chose
+    "delete forever"), an account note the server already knows is remembered in
+    pending_purges so the sync engine can tell the server too."""
     for row in rows:
         backup_note_content(row["id"], row["content"], "purged")  # last resort copy on disk
+        if record and row["account_id"] and row["server_rev"] > 0:
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_purges (account_id, note_id, base_rev, server_deleted)"
+                " VALUES (?, ?, ?, ?)", (row["account_id"], row["id"], row["server_rev"], row["server_deleted"]))
         conn.execute("DELETE FROM notes WHERE id = ?", (row["id"],))
         conn.execute("DELETE FROM adoptions WHERE local_id = ?", (row["id"],))
     return len(rows)
@@ -626,23 +649,22 @@ def _purge_rows(conn, rows):
 def purge_note(note_id):
     """Delete a trashed note for good. False if it isn't in the trash."""
     with _db(write=True) as conn:
-        rows = conn.execute("SELECT id, content FROM notes WHERE id = ? AND deleted_at IS NOT NULL",
-                            (note_id,)).fetchall()
-        return _purge_rows(conn, rows) == 1
+        rows = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NOT NULL", (note_id,)).fetchall()
+        return _purge_rows(conn, rows, record=True) == 1
 
 
 def empty_trash():
     with _db(write=True) as conn:
-        rows = conn.execute("SELECT id, content FROM notes WHERE account_id IS ? AND deleted_at IS NOT NULL",
+        rows = conn.execute("SELECT * FROM notes WHERE account_id IS ? AND deleted_at IS NOT NULL",
                             (_scope,)).fetchall()
-        return _purge_rows(conn, rows)
+        return _purge_rows(conn, rows, record=True)
 
 
 def _purge_expired(conn, now):
     cutoff = now - TRASH_RETENTION_DAYS * 86400
     rows = conn.execute("SELECT id, content FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?",
                         (cutoff,)).fetchall()
-    return _purge_rows(conn, rows)
+    return _purge_rows(conn, rows)  # the server purges expired trash on its own schedule
 
 
 def purge_expired_trash(now=None):

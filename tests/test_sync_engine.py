@@ -326,6 +326,90 @@ class FailureTest(SyncCase):
         self.assertGreaterEqual(len(b.synced_live()), 130)
 
 
+class DeleteForeverTest(SyncCase):
+    def setUp(self):
+        super().setUp()
+        self.a = self.device("a", register=True)
+        self.a.sync()
+        self.b = self.device("b")
+        self.b.sync()
+
+    def server_note(self, note_id):
+        return next(r for r in self.server_notes() if r["id"] == note_id)
+
+    def test_delete_forever_reaches_the_server_and_other_devices(self):
+        a, b = self.a, self.b
+        nid = a.create("# top secret")
+        a.sync()
+        b.sync()
+        a.trash(nid)
+        a.sync()
+        self.assertTrue(a.activate().purge_note(nid))
+
+        status, _ = a.sync()
+
+        self.assertEqual(status["state"], "synced")
+        note = self.server_note(nid)
+        self.assertEqual((note["content"], note["purged_at"] is not None), ("", True))
+        b.sync()
+        self.assertNotIn(nid, [r["id"] for r in b.rows()])  # gone from b's list and trash
+        a.sync()
+        self.assertNotIn(nid, [r["id"] for r in a.rows()])  # and it did not come back on a
+
+    def test_purging_before_the_trash_was_ever_pushed_still_works(self):
+        a = self.a
+        nid = a.create("# offline then gone")
+        a.sync()  # the server has it, live
+        a.session.offline = True
+        a.trash(nid)
+        a.activate().purge_note(nid)
+        status, _ = a.sync()
+        self.assertEqual(status["state"], "offline")
+        self.assertEqual(status["pending"], 1)  # the purge is waiting
+
+        a.session.offline = False
+        status, _ = a.sync()
+
+        self.assertEqual(status["state"], "synced")
+        self.assertIsNotNone(self.server_note(nid)["purged_at"])
+        self.assertEqual(status["pending"], 0)
+
+    def test_a_note_someone_else_edited_since_is_not_destroyed(self):
+        a, b = self.a, self.b
+        nid = a.create("# shared")
+        a.sync()
+        b.sync()
+        a.trash(nid)
+        a.sync()
+        b.sync()
+        b.edit(nid, "# shared\nb's valuable edit")  # b restores-by-editing while a is about to purge
+        b.sync()
+        a.activate().purge_note(nid)  # a decided from the trash view it saw earlier
+
+        a.sync()
+
+        self.assertIsNone(self.server_note(nid)["purged_at"])
+        self.assertIn("b's valuable edit", self.server_note(nid)["content"])
+        self.assertIn("b's valuable edit", a.all_text())  # the note is back on a
+
+    def test_purge_requests_survive_a_restart(self):
+        a = self.a
+        nid = a.create("# will be purged after restart")
+        a.sync()
+        a.trash(nid)
+        a.sync()
+        a.session.offline = True
+        a.activate().purge_note(nid)
+        a.sync()
+        from app.sync.engine import SyncEngine
+        a.activate()
+        a.engine = SyncEngine(self.server.url)
+        a.session = type(a.session)(a.engine.client.session)
+        a.engine.client.session = a.session
+        a.sync()
+        self.assertIsNotNone(self.server_note(nid)["purged_at"])
+
+
 class FuzzTest(SyncCase):
     """Random work on three devices with flaky networks. Whatever happens, every piece of text
     a user typed must still exist somewhere at the end, and the devices must agree."""

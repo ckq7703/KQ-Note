@@ -171,6 +171,11 @@ class SyncClient:
             "POST", f"/v2/notes/{note_id}/restore",
             json={"base_rev": base_rev, "device_id": device_id, "mutation_id": mutation_id}))
 
+    def purge_note(self, note_id, base_rev, device_id, mutation_id):
+        return self._note_response(self._request(
+            "POST", f"/v2/notes/{note_id}/purge",
+            json={"base_rev": base_rev, "device_id": device_id, "mutation_id": mutation_id}))
+
     def move_note(self, note_id, position):
         return self._note_response(self._request("PATCH", f"/v2/notes/{note_id}", json={"position": position}))
 

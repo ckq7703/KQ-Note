@@ -94,6 +94,9 @@ def _apply_one(conn, account_id, remote, events):
             _remote_purged(conn, row, events)
         return
     if row is None:
+        if conn.execute("SELECT 1 FROM pending_purges WHERE account_id = ? AND note_id = ?",
+                        (account_id, remote["id"])).fetchone():
+            return  # the user is deleting this for good; don't bring it back while that is in flight
         _insert_remote(conn, account_id, remote)
         events.append({"type": "changed", "id": remote["id"]})
         return
@@ -227,6 +230,18 @@ def finish_full_pass(account_id, seen_ids, cursor):
                     " base_content = NULL, dirty = 1 WHERE id = ?", (row["id"],))
         _set_state(conn, account_id, cursor=cursor)
     return events
+
+
+def pending_purges(account_id):
+    """"Delete forever" requests the server hasn't acknowledged yet."""
+    with store._db() as conn:
+        rows = conn.execute("SELECT * FROM pending_purges WHERE account_id = ? ORDER BY note_id", (account_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_pending_purge(account_id, note_id):
+    with store._db(write=True) as conn:
+        conn.execute("DELETE FROM pending_purges WHERE account_id = ? AND note_id = ?", (account_id, note_id))
 
 
 def import_legacy_slot(account_id, content):
