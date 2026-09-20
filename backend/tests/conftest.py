@@ -22,6 +22,8 @@ IS_POSTGRES = engine.dialect.name == "postgresql"
 
 @pytest.fixture(autouse=True)
 def fresh_db():
+    from app.guard import limiter
+    limiter.reset()  # tests register many users from one address; don't let one test spend another's budget
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield

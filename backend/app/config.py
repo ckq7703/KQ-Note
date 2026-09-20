@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     revision_coalesce_seconds: int = 60  # at most one snapshot per note per window (unless a big shrink)
     image_gc_grace_days: int = 30  # an unreferenced image must be at least this old before it is deleted
 
+    # Request guard (app/guard.py). Defaults are deliberately generous: they stop abuse and runaway
+    # clients, not normal use (a first upload of a big library is one request per note).
+    rate_limit_enabled: bool = True
+    rate_limit_api_per_minute: int = 1200  # per access token (or per IP when there is none)
+    rate_limit_auth_per_minute: int = 120  # /auth/* per client IP: slows password guessing
+    # How many reverse proxies sit in front of the API. 0 = use the socket's peer address. Set it to
+    # the real number, or every user behind a proxy shares one address and one limit.
+    trusted_proxy_count: int = 0
+    min_client_version: str = ""  # e.g. "1.5.0": older desktop clients get HTTP 426 on /v2 (empty = allow all)
+    legacy_notes_enabled: bool = True  # the one-note /notes/me API of desktop clients before 1.5
+    legacy_sunset: str = ""  # optional HTTP-date sent as a Sunset header on the legacy API
+
     # extra="ignore": the same .env also feeds docker-compose (POSTGRES_* etc.).
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

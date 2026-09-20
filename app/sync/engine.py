@@ -30,7 +30,7 @@ import requests
 from app import store
 
 from . import auth_store, repo, state as sync_state
-from .client import AuthRequiredError, CursorExpired, NoteNotFound, OfflineError, RevConflict, SyncClient, SyncError
+from .client import AuthRequiredError, CursorExpired, NoteNotFound, OfflineError, RateLimited, RevConflict, SyncClient, SyncError
 
 _IMAGE_ID_RE = re.compile(r"!\[\]\(kqnote-image:([^)]+)\)|\[\[image:([^\]]+)\]\]")
 
@@ -274,8 +274,8 @@ class SyncEngine:
         for note_id in repo.push_candidates(account):
             try:
                 self._push_note(account, note_id, events)
-            except (OfflineError, AuthRequiredError):
-                raise
+            except (OfflineError, AuthRequiredError, RateLimited):
+                raise  # these are about the whole cycle, not one note: stop and retry next time
             except SyncError as e:  # one bad note must not block the others
                 failures += 1
                 last_error = str(e)
@@ -302,8 +302,8 @@ class SyncEngine:
         for pending in repo.pending_purges(account):
             try:
                 self._do_purge(account, pending, events)
-            except (OfflineError, AuthRequiredError):
-                raise
+            except (OfflineError, AuthRequiredError, RateLimited):
+                raise  # these are about the whole cycle, not one note: stop and retry next time
             except SyncError as e:
                 failures += 1
                 last_error = str(e)

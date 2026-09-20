@@ -1,6 +1,6 @@
 # Thiết kế lại lưu trữ & đồng bộ note (nhiều note / user)
 
-Trạng thái: **Phase 0–3 đã làm trong code** (Phase 1 đã deploy lên server; Phase 2 và 3 là phần client, chưa phát hành). Phase 4 chờ thực hiện.
+Trạng thái: **Phase 0–4 đã làm trong code.** Phase 1 đã deploy lên server; Phase 4 có thay đổi server **chưa deploy**; các phần client (Phase 2–4) chưa phát hành.
 
 ## Vấn đề hiện tại
 
@@ -66,7 +66,7 @@ Nguyên tắc: local là nguồn để làm việc, server là nguồn để đ�
 | 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | **Xong, đã deploy** (rate limit chuyển sang Phase 4) |
 | 2 | Client: SQLite, UUID, thùng rác, gắn account | **Xong** (chưa phát hành riêng; phát hành cùng Phase 3) |
 | 3 | Client: engine sync v2 (cursor, bản sao xung đột, UI trạng thái) | **Xong** (chưa phát hành) |
-| 4 | Auto-merge 3-way theo dòng, dọn ảnh, deprecate API cũ, min-version gate | Chưa |
+| 4 | Gộp 3-way theo dòng, xoá vĩnh viễn báo server, dọn ảnh mồ côi, rate limit, deprecate API cũ, cổng phiên bản | **Xong** (server chưa deploy; client chưa phát hành) |
 
 ## Kiểm thử
 
@@ -228,3 +228,37 @@ Phần tự động không kiểm được giao diện thật trên Windows (tha
 7. Máy A đang mở ghi chú X, máy B xoá X: A phải chuyển sang ghi chú khác kèm thông báo, không văng lỗi.
 8. Đăng xuất: quay lại danh sách local; đăng nhập lại: không nhân đôi ghi chú.
 9. Dán ảnh vào một ghi chú ở máy A, đồng bộ, mở ở máy B: ảnh hiện ra.
+
+## Phase 4: chi tiết đã làm
+
+### A. Tự gộp theo dòng (`app/merge3.py`)
+
+Khi cả hai phía sửa chữ của cùng một ghi chú, thử gộp ba chiều với `base_content` trước khi tạo bản sao xung đột. Bảo thủ có chủ ý: chỉ gộp khi các chỗ sửa **không chạm nhau**; hai chỗ sửa sát nhau, cùng một dòng, sửa dòng mà bên kia xoá, thiếu `base_content`, hoặc ghi chú quá lớn (> 5000 dòng) đều rơi về bản sao xung đột như trước. Hai bên cùng thêm dòng vào đúng một chỗ (thường là cuối ghi chú) thì giữ cả hai, bản của server trước. Lưới an toàn cuối cùng: kết quả gộp mà thiếu bất kỳ dòng nào một phía đã thêm thì bị bỏ và thành xung đột. Dùng ở hai nơi: khi sync gặp bản mới (`repo._apply_newer`) và khi ô soạn thảo lưu đè lên chữ vừa bị sync đổi (`store.save_note_by_id` trả `SaveOutcome`; gộp được thì ô soạn thảo hiện bản gộp, không có hộp thoại).
+
+### B. Xoá vĩnh viễn báo cho server
+
+- Server: `POST /v2/notes/{id}/purge` xoá nội dung và lịch sử ngay. Chỉ purge được note **đang trong thùng rác** và **đúng revision** người gọi thấy (409 nếu không), nên note vừa được máy khác sửa hoặc khôi phục không bao giờ bị huỷ; gọi lại là no-op.
+- Client (schema v3, bảng `pending_purges`): xoá vĩnh viễn note mà server đã biết thì được ghi nhớ đến khi server xác nhận (trash trước nếu server còn coi là sống, rồi purge). Trong lúc đó, pull không nhét note trở lại. Nếu máy khác đã đổi note thì bản của họ quay lại thay vì bị phá. Tự dọn sau 60 ngày ở local không ghi gì (server tự purge theo lịch).
+
+### C. Dọn ảnh mồ côi (server)
+
+Job bảo trì xoá ảnh không còn được tham chiếu bởi note (sống hoặc trong thùng rác), bản lịch sử nào, hay slot v1 của **cùng người dùng**, và đã quá `IMAGE_GC_GRACE_DAYS` (30). Ảnh lỡ bị xoá sẽ được client tự tải lại ở lần đẩy sau (nó luôn so với danh sách ảnh trên server). Đặt ID ảnh theo hash **không làm**: việc dọn ảnh đã giải quyết vấn đề lưu trữ, còn đổi cách đặt tên ảnh chạm vào luồng dán/chụp màn hình mà chưa có lợi ích tương xứng.
+
+### D. Lớp bảo vệ request (server, `app/guard.py`)
+
+| Tính năng | Mặc định | Cấu hình |
+|---|---|---|
+| Rate limit theo access token (API) | 1200/phút | `RATE_LIMIT_API_PER_MINUTE`, tắt bằng `RATE_LIMIT_ENABLED=false` |
+| Rate limit `/auth/*` theo IP | 120/phút | `RATE_LIMIT_AUTH_PER_MINUTE`, `TRUSTED_PROXY_COUNT` |
+| Cổng phiên bản (`X-Client-Version` thấp hơn → HTTP 426 trên `/v2`) | tắt | `MIN_CLIENT_VERSION` |
+| API cũ `/notes/me`: header `Deprecation` (và `Sunset` nếu đặt) | bật | `LEGACY_SUNSET`; `LEGACY_NOTES_ENABLED=false` để tắt hẳn (HTTP 410) |
+
+Lưu ý triển khai: domain công khai đi qua **Cloudflare tunnel** nên mọi request đến từ địa chỉ của connector; giới hạn `/auth` theo IP đang được dùng chung cho tất cả người dùng cho đến khi đặt `TRUSTED_PROXY_COUNT` (thường là 1, sau khi kiểm `X-Forwarded-For` có IP thật). Máy trạm gửi `X-Client-Version` (từ `app/version.py`) và hiểu 426 ("Cần cập nhật KQ Note...") và 429 (dừng cả chu kỳ, thử lại sau, không đập vào từng note).
+
+### Deploy Phase 4 lên server
+
+Không có thay đổi schema server; tương thích ngược với client 1.4.x (chỉ thêm header `Deprecation` và các giới hạn rộng). Vì có thay đổi hành vi (rate limit bật sẵn), nên: chạy `pg_dump` thủ công, build và `docker compose up -d`, kiểm `/health`, thử đăng nhập và một lượt sync từ client hiện có, xem log có 429 bất thường không. Đặt `MIN_CLIENT_VERSION` hoặc tắt API cũ **chỉ sau khi** mọi thiết bị đã lên 1.5.0.
+
+### Kiểm thử thêm ở Phase 4
+
+Property test cho `merge3` (4000 ca, không mất dòng nào); test ngẫu nhiên nhiều thiết bị giờ chèn ở vị trí bất kỳ (để việc gộp thật sự xảy ra); test purge (endpoint, sổ ghi nhớ, nâng schema, kịch bản engine: offline, máy khác sửa, khởi động lại); test dọn ảnh và lớp bảo vệ ở server; `tests/test_version.py` canh lệch số phiên bản giữa `app/version.py`, `installer.iss`, `version_info.txt` và workflow.

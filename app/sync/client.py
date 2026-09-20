@@ -1,5 +1,7 @@
 import requests
 
+from app.version import __version__
+
 from . import auth_store
 
 
@@ -27,6 +29,14 @@ class CursorExpired(SyncError):
     """410: the change-feed cursor is no longer valid; start again from 0."""
 
 
+class UpdateRequired(SyncError):
+    """426: the server no longer accepts this version of the app."""
+
+
+class RateLimited(SyncError):
+    """429: too many requests. Not a failure of any one note: the whole cycle should back off."""
+
+
 class NoteNotFound(SyncError):
     """404: the server has no such note."""
 
@@ -43,6 +53,8 @@ class SyncClient:
     def __init__(self, base_url):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
+        self.session.headers["X-Client-Version"] = __version__
+        self.session.headers["User-Agent"] = f"KQNote/{__version__}"
 
     def _request(self, method, path, retry_auth=True, **kwargs):
         token = auth_store.get_access_token()
@@ -60,6 +72,10 @@ class SyncClient:
             if self._refresh_access_token():
                 return self._request(method, path, retry_auth=False, **kwargs)
             raise AuthRequiredError("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại")
+        if resp.status_code == 426:
+            raise UpdateRequired("Cần cập nhật KQ Note lên bản mới để tiếp tục đồng bộ")
+        if resp.status_code == 429:
+            raise RateLimited("Đang gửi quá nhiều yêu cầu tới máy chủ, sẽ thử lại sau")
         return resp
 
     def _refresh_access_token(self):

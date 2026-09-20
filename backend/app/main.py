@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .database import engine
+from .guard import guard
 from .maintenance import maintenance_loop
 from .migrations import run_startup_migrations
 from .routers import auth, images, notes, notes_v2
@@ -23,6 +24,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="KQ Note Sync API", version="0.2.0", lifespan=lifespan)
+app.middleware("http")(guard)
 app.include_router(auth.router)
 app.include_router(notes.router)  # legacy v1 single-slot, for 1.4.x clients
 app.include_router(notes_v2.router)

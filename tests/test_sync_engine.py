@@ -326,6 +326,57 @@ class FailureTest(SyncCase):
         self.assertGreaterEqual(len(b.synced_live()), 130)
 
 
+class ServerSaysNoTest(SyncCase):
+    def setUp(self):
+        super().setUp()
+        self.a = self.device("a", register=True)
+        self.a.sync()
+
+    def fake(self, status, body=None):
+        import requests
+        resp = requests.Response()
+        resp.status_code = status
+        resp._content = b"{}"
+        return resp
+
+    def test_the_client_announces_its_version(self):
+        from app.version import __version__
+        session = self.a.engine.client.session.real
+        self.assertEqual(session.headers["X-Client-Version"], __version__)
+
+    def test_a_server_that_wants_an_update_produces_a_clear_message_and_loses_nothing(self):
+        a = self.a
+        nid = a.create("# waiting for the update")
+        with mock.patch.object(a.session.real, "request", return_value=self.fake(426)):
+            status, _ = a.sync()
+        self.assertEqual(status["state"], "error")
+        self.assertIn("cập nhật", status["message"])
+        self.assertEqual(status["pending"], 1)
+        status, _ = a.sync()  # after updating (or once the server relaxes) everything goes up
+        self.assertEqual(status["state"], "synced")
+        self.assertIn("# waiting for the update", texts(self.server_notes()))
+
+    def test_rate_limiting_stops_the_whole_cycle_instead_of_hammering_the_server(self):
+        a = self.a
+        for i in range(5):
+            a.create(f"# note {i}")
+        calls = []
+
+        def limited(method, url, **kw):
+            calls.append((method, url))
+            return self.fake(429)
+
+        with mock.patch.object(a.session.real, "request", side_effect=limited):
+            status, _ = a.sync()
+
+        self.assertEqual(status["state"], "error")
+        self.assertIn("quá nhiều", status["message"])
+        self.assertEqual(len(calls), 1)  # it did not try every note in turn
+        status, _ = a.sync()
+        self.assertEqual(status["state"], "synced")
+        self.assertEqual(status["pending"], 0)
+
+
 class DeleteForeverTest(SyncCase):
     def setUp(self):
         super().setUp()
