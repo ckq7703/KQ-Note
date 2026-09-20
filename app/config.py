@@ -1,7 +1,7 @@
 import json
 import os
 
-from app.store import get_data_dir
+from app.store import atomic_write_text, get_data_dir
 
 DEFAULTS = {
     "hotkey": "<ctrl>+<alt>+<space>",
@@ -31,6 +31,4 @@ def load_config():
 
 
 def save_config(cfg):
-    path = get_config_path()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    atomic_write_text(get_config_path(), json.dumps(cfg, ensure_ascii=False, indent=2))

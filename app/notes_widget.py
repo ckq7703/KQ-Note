@@ -351,7 +351,9 @@ class NotesWidget(tk.Toplevel):
         if self.sync_engine.is_logged_in():
             # Resuming a session from a previous run: notes.cloud.txt already
             # mirrors this account, refresh it with a normal (guarded) pull.
-            self._load_content_into_editor(store.load_cloud_cache())
+            # A missing cache file reads as "", which would show an empty editor
+            # and let the next autosave overwrite the real note with blank text.
+            self._load_content_into_editor(store.load_cloud_cache() or store.load_content())
             self.after(1000, self.sync_engine.pull_async)
             self.after(SYNC_POLL_INTERVAL_MS, self._poll_sync)
         else:
@@ -1592,6 +1594,8 @@ class NotesWidget(tk.Toplevel):
         st = sync_state.load_state()
         if content_hash(local_content) != st.get("last_synced_hash"):
             return  # local has unsynced edits; let the next push reconcile instead of clobbering
+        if local_content != result["content"]:
+            store.backup_note_content(self.active_note_id, local_content, "pre-cloud-pull")
         self._load_content_into_editor(result["content"])
         store.save_content(result["content"])
         store.save_cloud_cache(result["content"])
@@ -1602,6 +1606,9 @@ class NotesWidget(tk.Toplevel):
         # Logging in always shows this account's cloud content, even if that's
         # empty for a brand-new account — it's a separate "document" from the
         # local-only note, never auto-merged or auto-pushed into.
+        local_content = markup.serialize_from_text(self.text)
+        if local_content != result["content"]:
+            store.backup_note_content(self.active_note_id, local_content, "pre-cloud-login")
         self._load_content_into_editor(result["content"])
         store.save_content(result["content"])
         store.save_cloud_cache(result["content"])

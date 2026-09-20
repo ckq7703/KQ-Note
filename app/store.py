@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import time
 import uuid
@@ -13,11 +14,83 @@ DEFAULT_CONTENT = (
 )
 
 
+BACKUP_KEEP = 200
+
+
 def get_data_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     path = os.path.join(base, "NoteCheatsheet")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def _atomic_write(path, data, mode):
+    """Write to a temp file, fsync, then os.replace so a crash never leaves a truncated file."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    kwargs = {"encoding": "utf-8"} if "b" not in mode else {}
+    try:
+        with open(tmp, mode, **kwargs) as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path, text):
+    _atomic_write(path, text, "w")
+
+
+def atomic_write_bytes(path, data):
+    _atomic_write(path, data, "wb")
+
+
+def get_backups_dir():
+    path = os.path.join(get_data_dir(), "backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _prune_backups(directory):
+    try:
+        files = [os.path.join(directory, n) for n in os.listdir(directory) if n.endswith(".txt")]
+        files.sort(key=os.path.getmtime, reverse=True)
+        for old in files[BACKUP_KEEP:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def backup_note_content(note_id, content, reason):
+    """Keep a copy of note content that is about to be overwritten or deleted.
+
+    Best-effort: returns the backup path, or None if there was nothing to keep
+    or the copy failed. Never raises, so a backup problem can't block the caller.
+    """
+    if not (content or "").strip():
+        return None
+    try:
+        directory = get_backups_dir()
+        safe_id = "".join(c for c in str(note_id or "unknown") if c.isalnum() or c in "-_")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(directory, f"{safe_id}.{stamp}.{reason}.txt")
+        n = 1
+        while os.path.exists(path):
+            path = os.path.join(directory, f"{safe_id}.{stamp}.{reason}.{n}.txt")
+            n += 1
+        atomic_write_text(path, content)
+        _prune_backups(directory)
+        return path
+    except OSError:
+        return None
 
 
 def get_notes_path():
@@ -60,21 +133,60 @@ def _extract_title_and_snippet(content):
     return title, snippet
 
 
+def _quarantine_corrupt_index(path):
+    """Keep a copy of an unreadable index before anything rebuilds over it."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(path, os.path.join(os.path.dirname(path), f"index.corrupt-{stamp}.json"))
+
+
 def _load_index():
     path = get_index_path()
-    if os.path.exists(path):
+    if not os.path.exists(path):
+        return None
+    last_err = None
+    for _ in range(3):  # transient locks (antivirus, indexer) shouldn't look like corruption
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            _quarantine_corrupt_index(path)
+            return None
+        except OSError as e:
+            last_err = e
+            time.sleep(0.05)
+            continue
+        if not isinstance(data, dict):
+            _quarantine_corrupt_index(path)
+            return None
+        return data
+    raise last_err
 
 
 def _save_index(data):
-    path = get_index_path()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    atomic_write_text(get_index_path(), json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _scan_note_files():
+    """Rebuild index entries from note_*.txt files already on disk (newest first)."""
+    notes_dir = get_notes_store_dir()
+    found = []
+    for name in os.listdir(notes_dir):
+        if not (name.startswith("note_") and name.endswith(".txt")):
+            continue
+        path = os.path.join(notes_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            ts = int(os.path.getmtime(path))
+        except (OSError, UnicodeDecodeError):
+            continue
+        title, snippet = _extract_title_and_snippet(content)
+        found.append({
+            "id": name[:-4], "title": title, "snippet": snippet,
+            "updated_at": ts, "created_at": ts,
+        })
+    found.sort(key=lambda n: n["updated_at"], reverse=True)
+    return found
 
 
 def get_gemini_api_key():
@@ -121,6 +233,16 @@ def _ensure_multi_notes_initialized():
     if index_data is not None and "notes" in index_data:
         return index_data
 
+    # Index missing/corrupt/without "notes": adopt note files already on disk
+    # instead of re-initialising, which used to overwrite note_default.txt.
+    recovered = _scan_note_files()
+    if recovered:
+        index_data = dict(index_data or {})
+        index_data["notes"] = recovered
+        index_data["active_note_id"] = recovered[0]["id"]
+        _save_index(index_data)
+        return index_data
+
     # Migration / First-time init
     legacy_txt = get_notes_path()
     initial_content = None
@@ -139,22 +261,21 @@ def _ensure_multi_notes_initialized():
     title, snippet = _extract_title_and_snippet(initial_content)
     now_ts = int(time.time())
 
-    index_data = {
-        "active_note_id": note_id,
-        "notes": [
-            {
-                "id": note_id,
-                "title": title,
-                "snippet": snippet,
-                "updated_at": now_ts,
-                "created_at": now_ts,
-            }
-        ],
-    }
+    index_data = dict(index_data or {})  # keep unrelated keys (gemini settings)
+    index_data["active_note_id"] = note_id
+    index_data["notes"] = [
+        {
+            "id": note_id,
+            "title": title,
+            "snippet": snippet,
+            "updated_at": now_ts,
+            "created_at": now_ts,
+        }
+    ]
 
     note_file = os.path.join(get_notes_store_dir(), f"{note_id}.txt")
-    with open(note_file, "w", encoding="utf-8") as f:
-        f.write(initial_content)
+    if not os.path.exists(note_file):
+        atomic_write_text(note_file, initial_content)
 
     _save_index(index_data)
     return index_data
@@ -209,8 +330,7 @@ def load_note_by_id(note_id):
 def save_note_by_id(note_id, content):
     idx = _ensure_multi_notes_initialized()
     note_file = os.path.join(get_notes_store_dir(), f"{note_id}.txt")
-    with open(note_file, "w", encoding="utf-8") as f:
-        f.write(content or "")
+    atomic_write_text(note_file, content or "")
 
     title, snippet = _extract_title_and_snippet(content)
     now_ts = int(time.time())
@@ -245,8 +365,7 @@ def create_note(content="# Ghi chú mới\n\nNội dung ghi chú..."):
     now_ts = int(time.time())
 
     note_file = os.path.join(get_notes_store_dir(), f"{note_id}.txt")
-    with open(note_file, "w", encoding="utf-8") as f:
-        f.write(content or "")
+    atomic_write_text(note_file, content or "")
 
     idx.get("notes", []).insert(
         0,
@@ -270,6 +389,8 @@ def delete_note_by_id(note_id):
 
     note_file = os.path.join(get_notes_store_dir(), f"{note_id}.txt")
     if os.path.exists(note_file):
+        # No trash yet (Phase 2): keep a copy so a mistaken delete is recoverable.
+        backup_note_content(note_id, load_note_by_id(note_id), "deleted")
         try:
             os.remove(note_file)
         except Exception:
@@ -318,8 +439,7 @@ def load_cloud_cache():
 
 
 def save_cloud_cache(content):
-    with open(get_cloud_cache_path(), "w", encoding="utf-8") as f:
-        f.write(content or "")
+    atomic_write_text(get_cloud_cache_path(), content or "")
 
 
 def get_avatar_path():

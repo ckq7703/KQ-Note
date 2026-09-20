@@ -8,7 +8,7 @@ import json
 import os
 import uuid
 
-from app.store import get_data_dir
+from app.store import atomic_write_text, get_data_dir
 
 _DEFAULT_STATE = {
     "device_id": None,
@@ -37,8 +37,7 @@ def load_state():
 
 
 def _save_state(state):
-    with open(_state_path(), "w", encoding="utf-8") as f:
-        json.dump(state, f)
+    atomic_write_text(_state_path(), json.dumps(state))
 
 
 def update_after_sync(version, content_hash):

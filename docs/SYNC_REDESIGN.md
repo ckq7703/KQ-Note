@@ -1,0 +1,83 @@
+# Thiết kế lại lưu trữ & đồng bộ note (nhiều note / user)
+
+Trạng thái: **Phase 0 đã làm**, Phase 1–4 chờ thực hiện.
+
+## Vấn đề hiện tại
+
+Backend chỉ có 1 dòng `notes` cho mỗi user, trong khi app desktop có nhiều note. Sync đẩy note *đang mở* vào slot duy nhất đó và pull thì ghi slot đó lên note *đang mở*, nên các note đè lẫn nhau giữa các máy. Chi tiết các đường dẫn mất dữ liệu:
+
+1. Cloud 1 slot bị mọi note ghi đè (`flush_save`, `_apply_remote_update`, `_apply_initial_pull` trong `app/notes_widget.py`).
+2. Conflict: local ghi đè server, bản server chỉ lưu file trên máy, UI không báo (`_update_cloud_icon` rỗng, sự kiện `error` bị bỏ qua).
+3. `last_synced_hash` toàn cục: đổi note xong thì update từ xa bị bỏ qua âm thầm.
+4. `store.py` ghi file không atomic; index hỏng thì khởi tạo lại và ghi đè `note_default.txt`.
+5. Xoá là `os.remove` vĩnh viễn, không thùng rác, không tombstone.
+6. ID `note_default` trùng giữa các máy; ID note mới chỉ 32 bit.
+7. `sync_state` không theo account/note.
+8. Server: không lịch sử, không giới hạn kích thước, không migration, không backup DB, ảnh không được dọn.
+9. Khi đã đăng nhập, khởi động mà chưa có cache cloud cho note đang mở thì editor trống, autosave sau đó ghi đè note thật bằng nội dung trống.
+
+## Quyết định đã chốt
+
+| Câu hỏi | Quyết định |
+|---|---|
+| Xung đột | **Bản sao xung đột** (kiểu OneNote), không tự merge ở giai đoạn đầu. Auto-merge theo dòng để Phase 4 |
+| Đăng nhập khi đã có note local | **Upload lên tài khoản như note mới**, không ghi đè gì |
+| Lưu trữ local | **SQLite (WAL)** thay cho `index.json` + file `.txt` |
+
+## Tham khảo Microsoft
+
+- OneNote sync ngầm từ bản local; sửa cùng một đối tượng thì tạo bản sao xung đột và báo người dùng, không bỏ nội dung nào. Lưu theo revision (MS-ONESTORE).
+- Thùng rác 60 ngày cho page/section đã xoá.
+- Graph delta query: cursor không trong suốt, tombstone `@removed`, phải chịu được replay (idempotent), `410 Gone` thì full resync.
+- Sticky Notes: mỗi note là một item riêng gắn với tài khoản.
+
+## Kiến trúc đích
+
+Nguyên tắc: local là nguồn để làm việc, server là nguồn để đồng bộ. Không thao tác sync nào được ghi đè nội dung mà không giữ lại bản cũ.
+
+### Server (Postgres)
+
+- `notes(id UUID do client sinh, user_id, content, title, position, rev, seq, deleted_at, updated_by_device, created_at, updated_at)`
+- `note_revisions(note_id, rev, content, created_at)`: giữ 30 ngày hoặc N bản gần nhất, gộp các lần autosave sát nhau.
+- `user_sync(user_id, seq)`: tăng `seq` trong cùng transaction với mỗi lần ghi; đây là cursor delta.
+- API v2:
+  - `GET /v2/notes/changes?cursor=`: delta kèm tombstone, cursor quá cũ trả 410.
+  - `PUT /v2/notes/{id}` với `base_rev`: sai rev trả **409 kèm bản server, không bao giờ ghi đè**. Tạo mới/retry idempotent qua UUID + `mutation_id`.
+  - `DELETE` xoá mềm, `POST /restore`, job purge sau 60 ngày, `GET /revisions`.
+- Giới hạn 1 MB/note, số note tối đa/user, rate limit.
+- Migration: đổi tên `notes` thành `notes_legacy` (không xoá), mỗi dòng cũ thành 1 note mới. `/notes/me` cũ tiếp tục chạy như "hộp thư legacy" cho client 1.4.x; client mới import nó thành một note thường rồi ngừng dùng.
+
+### Client
+
+- SQLite: `notes`, `outbox`, `sync_meta` (cursor, device_id), `base_content`. Import một lần từ thư mục cũ và **giữ nguyên thư mục cũ làm backup**.
+- ID là UUID đầy đủ, mỗi note gắn `account_id`.
+- Engine sync theo từng note: ghi local trước, push từng note với `base_rev`, pull theo cursor, áp dụng idempotent.
+- Conflict: bản server ở lại note gốc, sửa đổi local thành **note bản sao "(xung đột – máy – giờ)"** có badge và thông báo trên UI.
+- Không hot-swap nội dung khi editor còn thay đổi chưa lưu. Xoá bên này mà bên kia đã sửa thì giữ lại (sửa thắng xoá).
+- Thùng rác 60 ngày; thứ tự note bằng fractional index.
+- Ảnh đặt ID theo SHA-256 (bất biến, idempotent); marker `kqnote-image:` cũ vẫn dùng được; dọn ảnh mồ côi khi purge.
+- Hiển thị trạng thái sync/lỗi; nút xuất tất cả ra `.md`/zip.
+
+## Các phase
+
+| Phase | Nội dung | Trạng thái |
+|---|---|---|
+| 0 | Hotfix an toàn: ghi atomic, khôi phục index hỏng, backup trước khi cloud ghi đè hoặc xoá note, vá editor trống khi khởi động, backup Postgres định kỳ | **Xong** (chưa release/deploy) |
+| 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | Chưa |
+| 2 | Client: SQLite, UUID, thùng rác, gắn account | Chưa |
+| 3 | Client: engine sync v2 (outbox, cursor, bản sao xung đột, UI trạng thái) | Chưa |
+| 4 | Auto-merge 3-way theo dòng, dọn ảnh, deprecate API cũ, min-version gate | Chưa |
+
+## Kiểm thử
+
+- Backend: pytest trên Postgres thật (concurrent PUT, retry idempotent, phân trang delta, tombstone, 410).
+- Client: engine với server giả mô phỏng offline, replay, 2 thiết bị, crash giữa lúc ghi.
+- Migration: dry-run trên bản restore của DB prod trong container tạm, không đụng container đang chạy.
+
+## Phase 0: chi tiết đã làm
+
+- `app/store.py`: `atomic_write_text/bytes`; `_load_index` cách ly index hỏng thành `index.corrupt-<ts>.json` rồi dựng lại từ các `note_*.txt` còn trên đĩa (giữ nguyên key khác như Gemini); không ghi đè `note_default.txt` đang tồn tại; `backup_note_content` lưu vào `backups/` (giữ 200 bản gần nhất); xoá note giờ để lại bản backup.
+- `app/notes_widget.py`: backup note local trước khi pull/đăng nhập ghi đè; khởi động khi đã đăng nhập mà chưa có cache cloud thì dùng nội dung note local thay vì editor trống.
+- `app/sync/state.py`, `app/config.py`: ghi atomic.
+- `backend/docker-compose.yml`: dịch vụ `db_backup` chạy `pg_dump -Fc` mỗi 24 giờ vào volume `db_backups`, giữ 14 bản.
+- Test: `python -m unittest tests.test_store_safety`.
