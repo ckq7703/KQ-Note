@@ -16,6 +16,8 @@ from app import ai_helper, markup, store
 from app.config import load_config, save_config
 from app.sync import state as sync_state
 from app.sync.engine import SyncEngine, content_hash
+from app.theme import BG, BG_HEADER, BG_MENU, BORDER, FG_TEXT, FG_MUTED, FG_ACCENT, FG_TITLE_TAG, MATCH_BG, MATCH_CURRENT_BG, SELECT_BG
+from app.trash_dialog import TrashDialog
 from app import winfx
 from app.winfx import get_work_area, round_window
 
@@ -35,18 +37,6 @@ SCREENSHOT_ICON_PATH = os.path.join(ASSETS_DIR, "screenshot-30.png")
 CLOUD_ICON_SIZE = 18
 AVATAR_SIZE = 20
 SCREENSHOT_ICON_SIZE = 18
-
-BG = "#141416"
-BG_HEADER = "#1a1a1d"
-BG_MENU = "#202024"
-BORDER = "#2c2c30"
-FG_TEXT = "#e7e7ea"
-FG_MUTED = "#75757d"
-FG_ACCENT = "#5b9df0"
-FG_TITLE_TAG = "#6fd0a0"
-MATCH_BG = "#4a4520"
-MATCH_CURRENT_BG = "#8a7a20"
-SELECT_BG = "#4a4a4f"
 
 MIN_W, MIN_H = 300, 260
 WINDOW_RADIUS = 16
@@ -1157,7 +1147,12 @@ class NotesWidget(tk.Toplevel):
         self.text.focus_force()
 
     def _confirm_delete_note(self, note_id, title):
-        if messagebox.askyesno("Xác nhận xoá", f"Bạn có chắc chắn muốn xoá ghi chú:\n\"{title}\"?", parent=self):
+        if messagebox.askyesno(
+            "Chuyển vào thùng rác",
+            f"Chuyển ghi chú vào thùng rác:\n\"{title}\"?\n"
+            f"Bạn có thể khôi phục trong {store.TRASH_RETENTION_DAYS} ngày.",
+            parent=self,
+        ):
             next_id = store.delete_note_by_id(note_id)
             if self.active_note_id == note_id:
                 self.active_note_id = next_id
@@ -1531,6 +1526,7 @@ class NotesWidget(tk.Toplevel):
         if hasattr(self, 'detail_view_frame') and self.detail_view_frame.winfo_viewable():
             items.append(("📷  Chụp màn hình", self._start_screenshot))
 
+        items.append(("🗑️  Thùng rác", self._open_trash))
         items.append(None)  # Separator
 
         if self.sync_engine.is_logged_in():
@@ -1545,6 +1541,14 @@ class NotesWidget(tk.Toplevel):
         x = self.menu_more_btn.winfo_rootx()
         y = self.menu_more_btn.winfo_rooty() + self.menu_more_btn.winfo_height() + 2
         menu.popup(x, y)
+
+    def _open_trash(self):
+        TrashDialog(self, on_change=self._on_trash_changed)
+
+    def _on_trash_changed(self):
+        # Restoring puts a note back in the list; refresh it if the list is what's showing.
+        if self.list_view_frame.winfo_viewable():
+            self._render_notes_list()
 
     def _update_cloud_icon(self):
         pass

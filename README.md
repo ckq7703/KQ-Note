@@ -30,7 +30,7 @@ Bấm vào biểu tượng ba gạch góc trên bên trái thanh tiêu đề đ�
 
 ### Tạo Mới Và Xóa Ghi Chú
 Bấm vào biểu tượng dấu cộng tại thanh tìm kiếm danh sách để tạo ghi chú mới.
-Bấm vào biểu tượng thùng rác trên thẻ ghi chú để thực hiện xóa sau khi xác nhận.
+Bấm vào biểu tượng thùng rác trên thẻ ghi chú để chuyển ghi chú vào thùng rác sau khi xác nhận. Ghi chú được giữ 60 ngày; mở mục Thùng rác trong menu ba chấm để khôi phục hoặc xóa vĩnh viễn.
 
 ### Sắp Xếp Thứ Tự Ghi Chú
 Nhấp và giữ biểu tượng tay kéo ở mép trái của thẻ ghi chú, sau đó di chuyển lên hoặc xuống đến vị trí mong muốn. Thứ tự mới sẽ được tự động lưu vào chỉ mục hệ thống.
@@ -66,4 +66,4 @@ B | Bật hoặc tắt định dạng in đậm
 
 Hệ điều hành: Windows 10 / Windows 11 (64-bit)
 Độ phân giải: Tự động điều chỉnh tỷ lệ hiển thị theo DPI màn hình (từ 100% đến 200%)
-Lưu trữ dữ liệu: Dữ liệu được lưu trữ cục bộ tại thư mục ứng dụng và đồng bộ ngầm qua giao thức HTTPS
+Lưu trữ dữ liệu: Dữ liệu được lưu trong cơ sở dữ liệu SQLite (kqnote.sqlite3) tại thư mục %APPDATA%\NoteCheatsheet và đồng bộ ngầm qua giao thức HTTPS

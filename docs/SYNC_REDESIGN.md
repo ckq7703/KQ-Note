@@ -1,6 +1,6 @@
 # Thiết kế lại lưu trữ & đồng bộ note (nhiều note / user)
 
-Trạng thái: **Phase 0 và Phase 1 (server v2) đã làm**, chưa deploy. Phase 2–4 chờ thực hiện.
+Trạng thái: **Phase 0 (đã có trong code), Phase 1 (server v2, đã deploy) và Phase 2 (lưu trữ local SQLite, chưa phát hành) đã làm.** Phase 3–4 chờ thực hiện.
 
 ## Vấn đề hiện tại
 
@@ -63,8 +63,8 @@ Nguyên tắc: local là nguồn để làm việc, server là nguồn để đ�
 | Phase | Nội dung | Trạng thái |
 |---|---|---|
 | 0 | Hotfix an toàn: ghi atomic, khôi phục index hỏng, backup trước khi cloud ghi đè hoặc xoá note, vá editor trống khi khởi động, backup Postgres định kỳ | **Xong** (chưa release/deploy) |
-| 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | **Xong** (chưa deploy; rate limit chuyển sang Phase 4) |
-| 2 | Client: SQLite, UUID, thùng rác, gắn account | Chưa |
+| 1 | Server v2: schema, migration, endpoint, revisions, shim `/notes/me` | **Xong, đã deploy** (rate limit chuyển sang Phase 4) |
+| 2 | Client: SQLite, UUID, thùng rác, gắn account | **Xong** (chưa phát hành; sync vẫn là bản v1, xem bên dưới) |
 | 3 | Client: engine sync v2 (outbox, cursor, bản sao xung đột, UI trạng thái) | Chưa |
 | 4 | Auto-merge 3-way theo dòng, dọn ảnh, deprecate API cũ, min-version gate | Chưa |
 
@@ -118,3 +118,43 @@ Khi API khởi động và thấy bảng `notes` dạng v1: trong **một transa
 3. Rollback: image cũ **không** chạy được trên DB đã migrate (bảng `notes` đã đổi hình). Muốn quay lại: dừng API, chạy trong Postgres
    `DROP TABLE note_revisions, notes, user_sync; ALTER TABLE notes_legacy RENAME TO notes; ALTER INDEX notes_legacy_pkey RENAME TO notes_pkey;`
    rồi chạy lại image cũ. Cách này mất các note v2 tạo sau migration, nên chỉ dùng khi chưa có client v2 nào ghi dữ liệu.
+
+## Phase 2: chi tiết đã làm (lưu trữ local)
+
+Code: `app/store.py` (viết lại phần lưu note; giữ nguyên tên hàm để UI ít phải sửa), `app/legacy_storage.py` (đọc layout cũ), `app/fracindex.py` (khoá thứ tự), `app/trash_dialog.py` + `app/theme.py` (UI thùng rác). Test: `tests/` (58 test).
+
+### Lưu trữ
+
+- Một file SQLite `kqnote.sqlite3` trong `%APPDATA%\NoteCheatsheet` (WAL, `synchronous=FULL`; sẽ có thêm file `-wal`/`-shm` cạnh nó, nên khi tự sao chép hãy chép cả ba). Không dùng tên `notes.db` vì tên đó thuộc layout cũ hơn.
+- Bảng `notes(id UUID, account_id, content, title, snippet, position, created_at, updated_at, deleted_at, legacy_id, server_rev, base_content, dirty)`, `kv` (note đang mở, cài đặt Gemini), `adoptions`. Mọi thao tác ghi là một transaction; lỗi giữa chừng thì rollback toàn bộ.
+- `position` là fractional index (`app.fracindex`): kéo thả một note chỉ đổi khoá của đúng note đó. Khi khoá dài quá `MAX_KEY_LEN` hoặc gặp khoá lạ/trùng (ví dụ `a0` do migration phía server tạo ra), store tự đánh số lại cả danh sách, vẫn giữ thứ tự.
+
+### Migration lần chạy đầu
+
+- Tự chạy khi mở app: đọc `notes_store/index.json` + `note_*.txt` (nếu index hỏng thì copy sang `index.corrupt-<ts>.json` và dựng lại từ các file note; file note không có trong index vẫn được nhập), rồi `notes.txt`, rồi `notes.db` cũ. Cài mới thì tạo note mặc định.
+- Toàn bộ trong **một transaction**, có kiểm tra lại số note và tổng số ký tự trước khi ghi `user_version`. Lỗi thì không thay đổi gì và lần mở sau thử lại; `main.py` hiện hộp thoại nêu rõ thư mục dữ liệu và ghi `startup_error.log`.
+- **Không sửa hay xoá file cũ** (`notes_store/`, `notes.txt`, ...): chúng là bản backup. Lưu ý: nếu ai đó chạy lại bản app cũ trên cùng thư mục, bản đó chỉ thấy dữ liệu tại thời điểm migrate. Có thể tự xoá chúng sau khi yên tâm.
+- ID cũ (`note_default`, `note_a1b2c3d4`) được đổi thành UUID; ID cũ giữ trong cột `legacy_id`. Ghi chú đang mở, thứ tự, thời gian tạo/sửa và cài đặt Gemini đều được giữ.
+
+### Thùng rác
+
+- Xoá note giờ là chuyển vào thùng rác (60 ngày, `TRASH_RETENTION_DAYS`, khớp với server). Mục **🗑️ Thùng rác** trong menu ba chấm mở hộp thoại: khôi phục, xoá vĩnh viễn, dọn sạch.
+- Xoá vĩnh viễn (và tự dọn khi quá hạn lúc khởi động) luôn để lại một bản `.purged.txt` trong `backups/` (giữ 200 bản gần nhất).
+
+### Phạm vi tài khoản (chuẩn bị cho Phase 3)
+
+- `store.set_scope(account_id)` chọn danh sách nào đang hiển thị (`None` = note chỉ có ở máy). `store.copy_local_notes_to_account(account_id)` **sao chép** các note local (bỏ qua note trống và note trong thùng rác) thành note mới của tài khoản, đánh dấu `dirty` để Phase 3 upload; note local gốc vẫn còn (đăng xuất là thấy lại) và bảng `adoptions` đảm bảo đăng nhập lại không nhân đôi note.
+- Các cột `server_rev`, `base_content`, `dirty` đã có nhưng **chưa có nơi nào đọc chúng** ngoài `dirty`; Phase 3 sẽ dùng.
+
+### Chưa đổi ở Phase 2
+
+- Luồng đăng nhập/đồng bộ vẫn là bản v1 (một slot trên server, `sync_state.json`, cache `notes.cloud.<id>.txt`) và **chưa gọi `set_scope`**, nên các rủi ro ghi đè giữa các note khi bật cloud vẫn còn cho đến Phase 3 (bản hotfix Phase 0 chỉ giảm nhẹ). Vì vậy không nên phát hành riêng Phase 2 mà nên gộp với Phase 3.
+- Local "xoá vĩnh viễn" chưa báo cho server: note đó ở lại thùng rác server tới khi server tự purge sau 60 ngày.
+
+### Lưu ý khi build (bẫy đã gặp)
+
+`xor_obfuscate.py` chèn helper sau dòng `import` cuối của **mọi** file `.py` bằng một regex mà `\s+` nuốt luôn xuống dòng. Hệ quả: dòng import kết thúc bằng chữ "import" (ví dụ module tên `legacy_import`), hoặc `from x import (` nhiều dòng ở cuối, sẽ làm hỏng file và hỏng bản build. `tests/test_build_compat.py` mô phỏng bước này và biên dịch lại mọi module; hãy giữ nó trong CI.
+
+### Chạy test
+
+`python -m unittest discover -s tests -t .` (Linux không màn hình: thêm `xvfb-run -a`; test dialog tự bỏ qua nếu không có display).

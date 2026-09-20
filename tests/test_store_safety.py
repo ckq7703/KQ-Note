@@ -1,72 +1,37 @@
-import importlib
-import json
 import os
-import sys
-import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests.store_case import StoreCase
 
 
-class StoreSafetyTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._old_appdata = os.environ.get("APPDATA")
-        os.environ["APPDATA"] = self._tmp.name
-        from app import store
-        self.store = importlib.reload(store)
-
-    def tearDown(self):
-        if self._old_appdata is None:
-            os.environ.pop("APPDATA", None)
-        else:
-            os.environ["APPDATA"] = self._old_appdata
-        self._tmp.cleanup()
+class FileSafetyTest(StoreCase):
+    """Atomic writes and best-effort disk backups (the parts of the store that still use files)."""
 
     def _backups(self):
         return sorted(os.listdir(self.store.get_backups_dir()))
 
     def test_atomic_write_replaces_and_leaves_no_temp_file(self):
-        path = os.path.join(self._tmp.name, "f.txt")
+        path = os.path.join(self.data_dir, "f.txt")
         self.store.atomic_write_text(path, "one")
         self.store.atomic_write_text(path, "two")
         with open(path, encoding="utf-8") as f:
             self.assertEqual(f.read(), "two")
-        self.assertEqual([n for n in os.listdir(self._tmp.name) if n.endswith(".tmp")], [])
+        self.assertEqual([n for n in os.listdir(self.data_dir) if n.endswith(".tmp")], [])
 
-    def test_corrupt_index_is_recovered_without_losing_notes(self):
-        a = self.store.create_note("# Alpha\nbody a")
-        b = self.store.create_note("# Beta\nbody b")
-        self.store.save_note_by_id("note_default", "# Default\nkeep me")
-        with open(self.store.get_index_path(), "w", encoding="utf-8") as f:
-            f.write("{ this is not json")
+    def test_atomic_write_bytes(self):
+        path = os.path.join(self.data_dir, "b.bin")
+        self.store.atomic_write_bytes(path, b"\x00\x01")
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), b"\x00\x01")
 
-        ids = {n["id"] for n in self.store.list_notes()}
-
-        self.assertEqual(ids, {a, b, "note_default"})
-        self.assertEqual(self.store.load_note_by_id("note_default"), "# Default\nkeep me")
-        self.assertEqual(self.store.load_note_by_id(a), "# Alpha\nbody a")
-        quarantined = [n for n in os.listdir(self.store.get_notes_store_dir())
-                       if n.startswith("index.corrupt-")]
-        self.assertEqual(len(quarantined), 1)
-
-    def test_recovery_preserves_extra_index_keys_when_notes_key_missing(self):
-        self.store.set_gemini_api_key("secret-key")
-        nid = self.store.create_note("# Keep\nx")
-        with open(self.store.get_index_path(), "w", encoding="utf-8") as f:
-            json.dump({"gemini_api_key": "secret-key"}, f)
-
-        self.assertIn(nid, {n["id"] for n in self.store.list_notes()})
-        self.assertEqual(self.store.get_gemini_api_key(), "secret-key")
-
-    def test_delete_keeps_a_backup_copy(self):
-        nid = self.store.create_note("# Precious\nimportant text")
-        self.store.delete_note_by_id(nid)
-
-        backups = [n for n in self._backups() if n.startswith(nid) and ".deleted" in n]
-        self.assertEqual(len(backups), 1)
-        with open(os.path.join(self.store.get_backups_dir(), backups[0]), encoding="utf-8") as f:
-            self.assertEqual(f.read(), "# Precious\nimportant text")
+    def test_a_failed_atomic_write_keeps_the_old_file(self):
+        path = os.path.join(self.data_dir, "f.txt")
+        self.store.atomic_write_text(path, "good")
+        with self.assertRaises(TypeError):
+            self.store.atomic_write_text(path, 123)  # not writable as text
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "good")
+        self.assertEqual([n for n in os.listdir(self.data_dir) if n.endswith(".tmp")], [])
 
     def test_backup_skips_empty_and_never_clobbers_same_second(self):
         self.assertIsNone(self.store.backup_note_content("n1", "   ", "x"))
