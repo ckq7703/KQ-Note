@@ -16,6 +16,7 @@ import time
 import uuid
 
 from app import store
+from app.merge3 import merge3
 
 
 # ------------------------------------------------------------------ small helpers
@@ -164,9 +165,21 @@ def _apply_newer(conn, account_id, row, remote, events):
             else:
                 deleted_at = row["deleted_at"] if (local_deleted and trash_intent) else None
         else:
-            # Both sides wrote different text (trashed or not): never pick one, keep ours as a new note.
-            copy_id = store.create_conflict_copy(conn, account_id, row["title"], row["content"])
-            events.append({"type": "conflict", "id": row["id"], "copy_id": copy_id, "title": row["title"]})
+            # Both sides wrote different text. If they touched different parts of the note the two
+            # versions combine cleanly; otherwise never pick one: keep ours as a new note.
+            merged = merge3(row["base_content"], row["content"], remote["content"]) if row["base_content"] is not None else None
+            if merged is not None:
+                content, dirty = merged, 0 if merged == remote["content"] else 1
+                if remote_deleted:
+                    deleted_at = row["deleted_at"] if local_deleted else None
+                    if not local_deleted:
+                        events.append({"type": "restored", "id": row["id"]})  # our edit brought it back
+                else:
+                    deleted_at = row["deleted_at"] if (local_deleted and trash_intent) else None
+                events.append({"type": "merged", "id": row["id"]})
+            else:
+                copy_id = store.create_conflict_copy(conn, account_id, row["title"], row["content"])
+                events.append({"type": "conflict", "id": row["id"], "copy_id": copy_id, "title": row["title"]})
     elif trash_intent:
         if local_deleted and remote_deleted:
             deleted_at = row["deleted_at"]  # both sides want it in the trash
@@ -179,7 +192,12 @@ def _apply_newer(conn, account_id, row, remote, events):
 
     position, server_position = _adopt_position(row, remote)
     title, snippet = store._extract_title_and_snippet(content)
-    updated_at = _epoch(remote.get("updated_at")) if content == remote["content"] else row["updated_at"]
+    if content == remote["content"]:
+        updated_at = _epoch(remote.get("updated_at"))
+    elif content == row["content"]:
+        updated_at = row["updated_at"]
+    else:
+        updated_at = int(time.time())  # a merge of both sides
     conn.execute(
         "UPDATE notes SET content = ?, title = ?, snippet = ?, updated_at = ?, deleted_at = ?, dirty = ?,"
         " server_rev = ?, server_deleted = ?, base_content = ?, position = ?, server_position = ? WHERE id = ?",

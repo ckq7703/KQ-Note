@@ -14,6 +14,7 @@ import time
 import uuid
 
 from app import fracindex, legacy_storage
+from app.merge3 import merge3
 
 DEFAULT_CONTENT = (
     "# Nmap\n"
@@ -498,13 +499,24 @@ def load_note_by_id(note_id):
     return row[0] if row else ""
 
 
+class SaveOutcome:
+    """What happened when a save could not simply overwrite: the stored text had moved on.
+    `merged` - the two versions combined cleanly and the merge is now stored;
+    `copy_id` - they touched the same lines, so the caller's text became this new note."""
+
+    def __init__(self, merged=False, copy_id=None):
+        self.merged = merged
+        self.copy_id = copy_id
+
+
 def save_note_by_id(note_id, content, expected_old=None):
     """Store `content` for a note.
 
     `expected_old` is what the caller believes is currently stored (the text it loaded).
     If the stored text has since changed underneath it (a sync applied another device's
-    version), the caller's text is NOT written over it: it becomes a conflict copy, and the
-    copy's id is returned. Returns None when the save was a plain success.
+    version), the caller's text is NOT written over it: the two are merged when they touched
+    different parts of the note, and otherwise the caller's text is kept as a conflict copy.
+    Returns None for a plain save, else a SaveOutcome.
     """
     content = content or ""
     title, snippet = _extract_title_and_snippet(content)
@@ -516,12 +528,20 @@ def save_note_by_id(note_id, content, expected_old=None):
         if row["content"] == content:
             return None  # unchanged content must not look like an edit
         if expected_old is not None and row["content"] != expected_old:
-            return create_conflict_copy(conn, row["account_id"], row["title"], content)
-        conn.execute(
-            "UPDATE notes SET content = ?, title = ?, snippet = ?, updated_at = ?,"
-            " dirty = CASE WHEN account_id IS NULL THEN dirty ELSE 1 END WHERE id = ?",
-            (content, title, snippet, int(time.time()), note_id))
-    return None
+            merged = merge3(expected_old, content, row["content"])
+            if merged is None:
+                return SaveOutcome(copy_id=create_conflict_copy(conn, row["account_id"], row["title"], content))
+            content = merged
+            title, snippet = _extract_title_and_snippet(content)
+            outcome = SaveOutcome(merged=True)
+        else:
+            outcome = None
+        if content != row["content"]:
+            conn.execute(
+                "UPDATE notes SET content = ?, title = ?, snippet = ?, updated_at = ?,"
+                " dirty = CASE WHEN account_id IS NULL THEN dirty ELSE 1 END WHERE id = ?",
+                (content, title, snippet, int(time.time()), note_id))
+    return outcome
 
 
 def create_note(content="# Ghi chú mới\n\nNội dung ghi chú..."):

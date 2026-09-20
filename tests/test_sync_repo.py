@@ -110,6 +110,55 @@ class ConflictTest(RepoCase):
         self.assertIn(copy_id, repo.push_candidates(ACCT))
 
 
+class MergeTest(RepoCase):
+    BASE = "title\nline a\nline b\nline c\nline d\n"
+
+    def test_edits_in_different_places_merge_into_one_note(self):
+        self.synced_note(content=self.BASE, rev=1)
+        self.edit_locally("n1", "title\nline a\nline b\nline c\nline d\nadded here\n")
+        events = self.pull(remote("n1", 2, "TITLE\nline a\nline b\nline c\nline d\n"))
+
+        row = self.row()
+        self.assertEqual(row["content"], "TITLE\nline a\nline b\nline c\nline d\nadded here\n")
+        self.assertEqual((row["dirty"], row["server_rev"]), (1, 2))  # the merge still has to go up
+        self.assertEqual(row["base_content"], "TITLE\nline a\nline b\nline c\nline d\n")
+        self.assertTrue([e for e in events if e["type"] == "merged"])
+        self.assertFalse([e for e in events if e["type"] == "conflict"])
+        self.assertEqual(len(self.contents()), 1)  # no conflict copy
+        self.assertEqual(repo.next_op(row), ("put", False))
+
+    def test_edits_to_the_same_lines_still_make_a_conflict_copy(self):
+        self.synced_note(content=self.BASE, rev=1)
+        self.edit_locally("n1", "title\nOURS\nline b\nline c\nline d\n")
+        events = self.pull(remote("n1", 2, "title\nTHEIRS\nline b\nline c\nline d\n"))
+        self.assertTrue([e for e in events if e["type"] == "conflict"])
+        self.assertEqual(self.row()["content"], "title\nTHEIRS\nline b\nline c\nline d\n")
+
+    def test_when_the_merge_equals_the_servers_text_nothing_is_left_to_push(self):
+        self.synced_note(content=self.BASE, rev=1)
+        self.edit_locally("n1", "title\nline a\nline b\nline c\n")  # we deleted the last line
+        self.pull(remote("n1", 2, "title\nline a\nline b\nline c\n"))  # so did they
+        row = self.row()
+        self.assertEqual((row["dirty"], row["server_rev"]), (0, 2))
+
+    def test_our_edit_merged_into_a_note_the_server_deleted_brings_it_back(self):
+        self.synced_note(content=self.BASE, rev=1)
+        self.edit_locally("n1", "title\nline a\nline b\nline c\nline d\nmine\n")
+        events = self.pull(remote("n1", 2, "TITLE\nline a\nline b\nline c\nline d\n", deleted=True))
+        row = self.row()
+        self.assertEqual(row["content"], "TITLE\nline a\nline b\nline c\nline d\nmine\n")
+        self.assertIsNone(row["deleted_at"])
+        self.assertTrue([e for e in events if e["type"] == "restored"])
+        self.assertEqual(repo.next_op(row), ("put", True))
+
+    def test_without_a_base_text_we_never_guess_and_keep_both(self):
+        self.synced_note(content=self.BASE, rev=1)
+        self.sql("UPDATE notes SET base_content = NULL WHERE id = 'n1'")
+        self.edit_locally("n1", "title\nline a\nline b\nline c\nline d\nmine\n")
+        events = self.pull(remote("n1", 2, "TITLE\nline a\nline b\nline c\nline d\n"))
+        self.assertTrue([e for e in events if e["type"] == "conflict"])
+
+
 class DeleteVsEditTest(RepoCase):
     def test_remote_delete_of_a_clean_note_trashes_it_here(self):
         self.synced_note(content="v1", rev=1)

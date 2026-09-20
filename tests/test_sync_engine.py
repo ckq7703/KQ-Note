@@ -352,7 +352,9 @@ class FuzzTest(SyncCase):
                 d.create(f"# note {token()}")
             elif action == "edit" and live:
                 row = rng.choice(live)
-                d.edit(row["id"], row["content"] + f"\n{token()}")
+                parts = row["content"].split("\n")
+                parts.insert(rng.randint(0, len(parts)), token())  # anywhere in the note, so edits sometimes merge
+                d.edit(row["id"], "\n".join(parts))
             elif action == "trash" and len(live) > 1:
                 d.trash(rng.choice(live)["id"])
             elif action == "restore" and d.trashed():

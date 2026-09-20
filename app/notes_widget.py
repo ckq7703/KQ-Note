@@ -1493,13 +1493,19 @@ class NotesWidget(tk.Toplevel):
             # writing the editor's older text back would undo that.)
             return
         active_id = getattr(self, "active_note_id", None) or store.get_active_note_id()
-        copy_id = None
+        outcome = None
         if active_id:
-            copy_id = store.save_note_by_id(active_id, content, expected_old=self._db_content)
+            outcome = store.save_note_by_id(active_id, content, expected_old=self._db_content)
         else:
             store.save_content(content)
-        if copy_id:
-            self._on_edit_conflicted(copy_id)
+        if outcome is not None and outcome.copy_id:
+            self._on_edit_conflicted(outcome.copy_id)
+            return
+        if outcome is not None and outcome.merged:
+            # The stored text had moved on, but the changes were in different places and were
+            # combined: show the merged text (cursor stays put) and carry on.
+            self._reload_active_note()
+            self._sync_soon()
             return
         self._db_content = content
         self._editor_baseline = content

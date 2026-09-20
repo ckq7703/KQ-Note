@@ -449,7 +449,9 @@ class CompareAndSaveTest(StoreCase):
         nid = self.store.create_note("v1")
         self.store.save_note_by_id(nid, "v2 applied by a sync")  # the editor still thinks it is v1
 
-        copy_id = self.store.save_note_by_id(nid, "v1 plus my typing", expected_old="v1")
+        outcome = self.store.save_note_by_id(nid, "v1 plus my typing", expected_old="v1")
+        copy_id = outcome.copy_id
+        self.assertFalse(outcome.merged)
 
         self.assertEqual(self.store.load_note_by_id(nid), "v2 applied by a sync")  # not overwritten
         copy = self.store.load_note_by_id(copy_id)
@@ -461,7 +463,7 @@ class CompareAndSaveTest(StoreCase):
         self.store.set_scope("acct-1")
         nid = self.store.create_note("v1")
         self.store.save_note_by_id(nid, "v2")
-        copy_id = self.store.save_note_by_id(nid, "mine", expected_old="v1")
+        copy_id = self.store.save_note_by_id(nid, "mine", expected_old="v1").copy_id
         row = self.sql("SELECT account_id, dirty, server_rev FROM notes WHERE id = ?", (copy_id,))[0]
         self.assertEqual(tuple(row), ("acct-1", 1, 0))
 
@@ -469,6 +471,26 @@ class CompareAndSaveTest(StoreCase):
         nid = self.store.create_note("same")
         self.assertIsNone(self.store.save_note_by_id(nid, "same", expected_old="stale"))
         self.assertEqual(len(self.store.list_notes()), 2)  # + the fresh-install note, no copy
+
+    def test_changes_in_different_places_are_merged_not_turned_into_a_conflict(self):
+        nid = self.store.create_note("first\nsecond\nthird\n")
+        self.store.save_note_by_id(nid, "FIRST (from a sync)\nsecond\nthird\n")  # the editor still has the old text
+
+        outcome = self.store.save_note_by_id(nid, "first\nsecond\nthird\nmy new line\n", expected_old="first\nsecond\nthird\n")
+
+        self.assertTrue(outcome.merged)
+        self.assertIsNone(outcome.copy_id)
+        self.assertEqual(self.store.load_note_by_id(nid), "FIRST (from a sync)\nsecond\nthird\nmy new line\n")
+        self.assertEqual(len(self.store.list_notes()), 2)  # no conflict copy appeared
+
+    def test_a_merge_marks_an_account_note_dirty_so_it_uploads(self):
+        self.store.set_scope("acct-1")
+        nid = self.store.create_note("a\nb\nc\n")
+        self.sql("UPDATE notes SET dirty = 0 WHERE id = ?", (nid,))
+        self.store.save_note_by_id(nid, "A\nb\nc\n")
+        self.sql("UPDATE notes SET dirty = 0 WHERE id = ?", (nid,))
+        self.store.save_note_by_id(nid, "a\nb\nc\nmine\n", expected_old="a\nb\nc\n")
+        self.assertEqual(self.sql("SELECT dirty FROM notes WHERE id = ?", (nid,))[0][0], 1)
 
     def test_without_expected_old_the_save_is_unconditional(self):
         nid = self.store.create_note("v1")

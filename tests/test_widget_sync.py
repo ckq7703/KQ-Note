@@ -42,6 +42,20 @@ class EditorMeetsSyncTest(WidgetCase):
         self.assertEqual((copies[0]["dirty"], copies[0]["server_rev"]), (1, 0))  # will be uploaded
         self.messagebox.showinfo.assert_called_once()
 
+    def test_typing_in_a_different_place_than_the_remote_change_is_merged_quietly(self):
+        from app.sync import repo
+        repo.apply_page(ACCT, [remote_note("n1", 2, "line one\nline two\nline three")])
+        self.widget._reload_active_note()
+        self.type_text(" and my tail")  # on the last line
+        self.remote(remote_note("n1", 3, "LINE ONE\nline two\nline three"))  # the server edited the first line
+
+        self.widget.flush_save()
+
+        self.assertEqual(self.editor_text(), "LINE ONE\nline two\nline three and my tail")
+        self.assertEqual(self.store.load_note_by_id("n1"), "LINE ONE\nline two\nline three and my tail")
+        self.assertEqual(len(self.account_notes()), 1)  # no conflict copy
+        self.messagebox.showinfo.assert_not_called()
+
     def test_an_arrow_key_after_a_remote_change_does_not_write_the_old_text_back(self):
         from app.sync import repo
         repo.apply_page(ACCT, [remote_note("n1", 2, "alpha changed remotely")])  # event not delivered yet
