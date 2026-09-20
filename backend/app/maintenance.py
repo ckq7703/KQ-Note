@@ -6,13 +6,15 @@ briefly and one bad row can't block the rest.
 
 import asyncio
 import logging
+import re
+from collections import defaultdict
 from datetime import timedelta
 
 from sqlalchemy import and_, delete, func, select, update
 
 from .config import settings
 from .database import SessionLocal
-from .models import Note, NoteRevision, UserSync
+from .models import Image, LegacyNote, Note, NoteRevision, UserSync
 from .note_service import apply_purge, aware, next_seq, utcnow
 
 log = logging.getLogger("kqnote.maintenance")
@@ -86,6 +88,41 @@ def prune_old_revisions(db, now=None) -> int:
     return len(old_ids)
 
 
+_IMAGE_REF = re.compile(r"!\[\]\(kqnote-image:([^)]+)\)|\[\[image:([^\]]+)\]\]")  # same markers the desktop app writes
+_DELETE_CHUNK = 500
+
+
+def _image_ids(text):
+    return {m.group(1) or m.group(2) for m in _IMAGE_REF.finditer(text or "")}
+
+
+def gc_orphan_images(db, now=None) -> int:
+    """Delete images no note refers to any more. "Refers" is generous: live and trashed notes,
+    every saved revision, and the pre-multi-note blob all count, so restoring an old version or
+    a trashed note never shows a missing picture. Only images older than image_gc_grace_days are
+    considered (a picture is uploaded just before the note that uses it). A client that finds an
+    image missing uploads it again on its next push, so a wrong deletion heals itself."""
+    now = now or utcnow()
+    cutoff = now - timedelta(days=settings.image_gc_grace_days)
+    candidates = defaultdict(list)
+    for user_id, image_id in db.execute(select(Image.user_id, Image.id).where(Image.created_at < cutoff)).all():
+        candidates[user_id].append(image_id)
+
+    removed = 0
+    for user_id, image_ids in candidates.items():
+        referenced = set()
+        for model in (Note, NoteRevision, LegacyNote):
+            for (content,) in db.execute(select(model.content).where(model.user_id == user_id)):
+                referenced |= _image_ids(content)
+        orphans = [i for i in image_ids if i not in referenced]
+        for start in range(0, len(orphans), _DELETE_CHUNK):
+            chunk = orphans[start:start + _DELETE_CHUNK]
+            db.execute(delete(Image).where(Image.user_id == user_id, Image.id.in_(chunk)))
+            db.commit()
+        removed += len(orphans)
+    return removed
+
+
 def run_maintenance_once():
     db = SessionLocal()
     try:
@@ -93,6 +130,7 @@ def run_maintenance_once():
             "purged": purge_expired_trash(db),
             "tombstones_dropped": drop_old_tombstones(db),
             "revisions_pruned": prune_old_revisions(db),
+            "images_removed": gc_orphan_images(db),
         }
         log.info("maintenance done: %s", result)
         return result

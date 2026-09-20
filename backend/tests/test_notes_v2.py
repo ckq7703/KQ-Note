@@ -330,6 +330,64 @@ def test_old_history_is_thinned_but_newest_few_survive(a, monkeypatch):
     assert len(a.revisions(nid).json()) == settings.revision_keep_min
 
 
+# ------------------------------------------------------------ image garbage collection
+
+def upload(client, headers, image_id):
+    r = client.put(f"/images/{image_id}", headers=headers, content=b"\x89PNG fake", )
+    assert r.status_code == 204, r.text
+
+
+def manifest(client, headers):
+    return set(client.get("/images/manifest", headers=headers).json()["ids"])
+
+
+def test_orphan_images_are_removed_but_anything_still_referenced_is_kept(client, alice, a):
+    from app import maintenance
+    for name in ("live", "trashed", "old_revision", "legacy", "orphan"):
+        upload(client, alice, name)
+    a.create("text ![](kqnote-image:live) more")
+    tid, _ = a.create("![](kqnote-image:trashed)")
+    a.trash(tid, base_rev=1)
+    rid, _ = a.create("v1 [[image:old_revision]]")
+    a.put(rid, "v2 with the picture removed " * 20, base_rev=1)  # v1 is kept as a history snapshot
+    client.put("/notes/me", headers=alice, json={"content": "![](kqnote-image:legacy)", "base_version": 0, "device_id": "d"})
+
+    later = note_service.utcnow() + timedelta(days=settings.image_gc_grace_days + 1)
+    removed = _run(maintenance.gc_orphan_images, later)
+
+    assert removed == 1
+    assert manifest(client, alice) == {"live", "trashed", "old_revision", "legacy"}
+
+
+def test_images_inside_the_grace_period_are_never_removed(client, alice):
+    from app import maintenance
+    upload(client, alice, "fresh")
+    soon = note_service.utcnow() + timedelta(days=settings.image_gc_grace_days - 1)
+    assert _run(maintenance.gc_orphan_images, soon) == 0
+    assert manifest(client, alice) == {"fresh"}
+
+
+def test_an_image_is_only_kept_alive_by_its_own_owners_notes(client, alice, bob, a, b):
+    from app import maintenance
+    upload(client, alice, "shared-name")
+    upload(client, bob, "shared-name")
+    b.create("![](kqnote-image:shared-name)")  # only bob's note uses it
+    later = note_service.utcnow() + timedelta(days=settings.image_gc_grace_days + 1)
+    assert _run(maintenance.gc_orphan_images, later) == 1
+    assert manifest(client, alice) == set()
+    assert manifest(client, bob) == {"shared-name"}
+
+
+def test_purging_a_note_frees_its_images(client, alice, a):
+    from app import maintenance
+    upload(client, alice, "pic")
+    nid, _ = a.create("![](kqnote-image:pic)")
+    a.trash(nid, base_rev=1)
+    purge(a, nid, 2)
+    later = note_service.utcnow() + timedelta(days=settings.image_gc_grace_days + 1)
+    assert _run(maintenance.gc_orphan_images, later) == 1
+
+
 # ------------------------------------------------------------ legacy shim
 
 def test_legacy_notes_me_endpoint_still_works_and_is_separate_from_v2(client, alice, a):

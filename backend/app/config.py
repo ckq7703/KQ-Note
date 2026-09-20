@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     revision_keep_min: int = 5  # always kept even when older than revision_retention_days
     revision_retention_days: int = 30
     revision_coalesce_seconds: int = 60  # at most one snapshot per note per window (unless a big shrink)
+    image_gc_grace_days: int = 30  # an unreferenced image must be at least this old before it is deleted
 
     # extra="ignore": the same .env also feeds docker-compose (POSTGRES_* etc.).
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
